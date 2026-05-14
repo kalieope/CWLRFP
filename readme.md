@@ -175,8 +175,7 @@ python -c "import ee; ee.Initialize(project='cwlrfp'); print('GEE connected')"
 | Sentinel-2 Level-2A | ESA via GEE | Exported | Spectral features (NDVI/NDWI/EVI) |
 | Sentinel-2 Spatial Grid | ESA via GEE | Exported | Wall-to-wall prediction surface |
 | USGS Landsat | Via CRMS land/water | Indirect | Binary loss labels |
-
-| NASA ORNL DAAC | daac.ornl.gov | Not yet downloaded | Future: carbon cycle products |
+| NASA ORNL DAAC | daac.ornl.gov | Downloaded |  carbon cycle products |
 
 ---
 
