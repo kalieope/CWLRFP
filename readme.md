@@ -3,6 +3,12 @@
 **Louisiana Tech University | Spring 2026**
 
 ---
+# CAUTION
+There is a lot of data in this RFP, a lot of it is too large to be uploaded
+to GitHub. All other data needed for the pipeline that is not easily accessible
+will be included in a separate .zip file that should be unzipped.
+The contents should be placed in the /data folder.
+
 
 ## Project Overview
 
