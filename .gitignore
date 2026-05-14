@@ -1,0 +1,9 @@
+# Ignore coordinate folder
+coordinate/
+
+# Ignore pycache folder
+pycache/
+__pycache__/
+
+# Ignore externData folder
+externData/
