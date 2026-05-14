@@ -7,3 +7,47 @@ __pycache__/
 
 # Ignore externData folder
 externData/
+
+#ignore models folder, recalculate models only locally
+models/
+
+#ignore figures & results-- should be generated and updated locally and not pushed to the repo (it's too much data)
+figures/
+results/
+
+#certain datafiles are too large, and are generated from raw data during the pipeline, so we ignore them
+data/fused_dataset.csv
+data/ccap_marsh_type.csv
+data/ccap_louisiana.tif
+data/fused_dataset_with_hydro.csv
+data/fused_dataset_with_ccap.csv
+data/fused_dataset_with_elevation.csv
+data/fused_dataset_final.csv
+data/crms_loss_timeseries.csv
+data/crms_brackish.csv
+data/crms_elevation.csv
+data/crms_freshwater_intermediate.csv
+data/crms_hydro_combined.csv
+data/crms_hydro_summary.csv
+data/crms_hydro_station_year.csv
+data/crms_loss_timeseries.csv
+data/crms_marsh_timeseries.csv
+data/crms_master_enriched.csv
+data/crms_master_with_hydro.csv
+data/crms_master.csv
+data/crms_saline.csv
+data/baustian_longterm_carbon.csv
+data/baustian_radionuclide.csv
+data/baustian_site_history.csv
+data/carbon_training_labels.csv
+data/carbon_validation_set.csv
+data/ccap_louisiana.tiff
+data/crms_sentinel2_features_v2.csv
+data/crms_sentinel2_features.csv
+data/deltaic_plain_elevation_30m.tif
+data/deltaic_plain_spectral_2023_07.tif
+data/deltaic_plain_spectral_v2_2023_07.tif
+data/deltax_rtk_elevation.csv
+data/deltax_soil_properties.csv
+data/ornl_carbon_spatial.csv
+data/ornl_tidal_wetland_soil_carbon.tif
