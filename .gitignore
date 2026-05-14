@@ -1,5 +1,5 @@
-# Ignore coordinate folder
-coordinate/
+# Ignore coordinates folder
+coordinates/
 
 # Ignore pycache folder
 pycache/
