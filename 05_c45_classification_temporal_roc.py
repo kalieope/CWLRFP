@@ -34,7 +34,7 @@ WHEN TO RE-RUN:
     Re-score only (rescore_new_data): when new CRMS/Sentinel-2 data arrives
 
 VALIDATION DESIGN:
-    Temporal ROC: ROC-AUC at 1-year, 3-year, 5-year look-ahead slices
+    Temporal ROC: ROC-AUC at 3-year look-ahead slice
     Spatially blocked CV: folds by geographic block to prevent leakage
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -188,9 +188,7 @@ def temporal_roc_validation(df, features, target):
     print(f"Validation years: {years[cutoff_idx]}–{years[-1]}")
 
     test_slices = {
-        '1yr_ahead': years[cutoff_idx:cutoff_idx+1],
         '3yr_ahead': years[cutoff_idx:min(cutoff_idx+3, len(years))],
-        '5yr_ahead': years[cutoff_idx:min(cutoff_idx+5, len(years))]
     }
 
     train_mask = df['year'].isin(train_years)
