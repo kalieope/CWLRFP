@@ -68,7 +68,7 @@ GEE extracts Sentinel-2 at ALL 425 locations
         ↓
 Split into two groups:
   ├── CRMS stations (395) → full pipeline with hydro → training data
-  └── BA/TE/etc (30)     → spectral only → validation against Baustian carbon values
+  └── BA/TE/etc (30)     → spectral only
 ```
 
 ---
@@ -94,9 +94,9 @@ CWLRFP/
 ├── get_high_risk.py                       High-risk unmonitored parcels
 ├── download_ccap.py                       C-CAP marsh classification download + processing
 ├── integrate_ornl_baustian.py             Baustian + ORNL DAAC carbon label integration
+│── 06_dashboard.py                        Main Streamlit dashboard (4 tabs)
 │
-├── ── DASHBOARD ──
-├── 06_dashboard.py                        Main Streamlit dashboard (4 tabs)
+│
 ├── hurricaneImplementation/
 │   ├── hurricane_tab.py                   Hurricane impact tab (not currently connected)
 │   └── storm_events.py                    Storm registry + scenario engine
@@ -199,7 +199,7 @@ python -c "import ee; ee.Initialize(project='cwlrfp'); print('GEE connected')"
 | Sentinel-2 Level-2A | ESA via GEE | Exported | Spectral features (NDVI/NDWI/EVI) |
 | Sentinel-2 Spatial Grid | ESA via GEE | Exported | Wall-to-wall prediction surface |
 | USGS Landsat | Via CRMS land/water | Indirect | Binary loss labels |
-| NASA ORNL DAAC | daac.ornl.gov | Downloaded |  carbon cycle products |
+| NASA ORNL DAAC | daac.ornl.gov | Downloaded |  carbon cycle products | unable to rectify coordinates returned with sample coordinates |
 
 ---
 
@@ -225,7 +225,6 @@ python -c "import ee; ee.Initialize(project='cwlrfp'); print('GEE connected')"
 ### Preprocessing follows papers exactly
 - Outlier removal: 75th percentile + 1.5x IQR (Chenevert & Edmonds 2024)
 - Swamp communities excluded (no sedimentologic data)
-- Distance variables log-transformed for normality
 - Backward elimination feature selection p < 0.05
 - 5-fold spatially blocked cross-validation × 100 runs
 - Marsh type treated as time-varying (not static) — 54% of sites changed type since 1949
@@ -239,7 +238,6 @@ python -c "import ee; ee.Initialize(project='cwlrfp'); print('GEE connected')"
 - 11 named storms flagged with impact zones (1992-2021)
 - storm_year binary feature added to all models
 - FP-Growth mines storm and chronic rules separately
-- Dashboard includes historical storm review + future scenario simulation
 
 ### Continuous update architecture
 - Data ingestion separated from model retraining

@@ -462,6 +462,8 @@ def build_map(df, layer_mode, selected_id=None, zoom_station=None,
 # ─────────────────────────────────────────────
 def render_station_detail(s):
     risk_text, risk_class = risk_label(s['loss_probability'])
+    recent_loss_val = s.get('recent_land_loss', None)
+    recent_loss_display = f"{recent_loss_val:.3f}" if recent_loss_val is not None else 'No data'
     st.markdown(f"""
     <div class="station-panel">
         <h4>{s['station_id']}</h4>
@@ -471,7 +473,7 @@ def render_station_detail(s):
         <div class="value">{s.get('Basin','N/A')}</div>
         <div class="label">Marsh Type</div>
         <div class="value">{s.get('marsh_type','N/A')}</div>
-        <div class="label">Loss Probability (10-yr)</div>
+        <div class="label">Loss Probability (5-yr)</div>
         <div class="value {risk_class}">{s['loss_probability']:.1%} — {risk_text}</div>
         <div class="label">Carbon Stock</div>
         <div class="value">{s.get('carbon_stock_validated', s.get('carbon_stock', float('nan'))):.4f} g C/cm³
@@ -485,8 +487,8 @@ def render_station_detail(s):
         <div class="value">{s.get('bulk_density',0):.3f} g/cm³</div>
         <div class="label">Organic Matter</div>
         <div class="value">{s.get('percent_organic',0):.1f}%</div>
-        <div class="label">Land Loss Detected</div>
-        <div class="value">{'Yes' if s.get('ever_lost_land',0)==1 else 'No'}</div>
+        <div class="label">Land Loss Detected Since 2015</div>
+        <div class="value">{recent_loss_display}</div>
     </div>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────

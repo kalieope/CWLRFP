@@ -8,15 +8,11 @@ PURPOSE:
 
     Auxiliary variables added for improved wall-to-wall prediction:
     - SRTM elevation (USGS/SRTMGL1_003) — 30m, global
-    - Distance to water (JRC/GSW1_4/GlobalSurfaceWater)
-    - Distance to river (WWF/HydroSHEDS/v1/FreeFlowingRivers)
-    - Total Suspended Sediment (MODIS/006/MOD09GA proxy)
 
 OUTPUTS (Google Drive folder: CWL_RFP):
     crms_sentinel2_features.csv       — station-level spectral + aux features
     deltaic_plain_spectral_YYYY_MM.tif — wall-to-wall spectral grid
     deltaic_plain_elevation.tif        — SRTM elevation raster
-    deltaic_plain_dist_water.tif       — distance to water raster
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -101,24 +97,6 @@ def add_all_indices(image):
 srtm = ee.Image('USGS/SRTMGL1_003').select('elevation').clip(study_area)
 print("SRTM elevation layer loaded")
 
-# JRC Global Surface Water — occurrence frequency 0-100%
-# Use occurrence band as proxy for distance to water
-gsw = ee.Image('JRC/GSW1_4/GlobalSurfaceWater').select('occurrence').clip(study_area)
-# Invert: high occurrence = close to water = low dist_to_water proxy
-dist_water_proxy = gsw.subtract(100).abs().rename('dist_to_water_proxy')
-print("JRC surface water layer loaded")
-
-# MODIS Terra Surface Reflectance — red band as TSS proxy
-# TSS correlates with red band reflectance in turbid coastal waters
-modis_tss = (ee.ImageCollection('MODIS/006/MOD09GA')
-    .filterDate('2020-01-01', '2023-12-31')
-    .filterBounds(study_area)
-    .select('sur_refl_b01')  # Red band — TSS proxy
-    .median()
-    .clip(study_area)
-    .rename('tss_proxy'))
-print("MODIS TSS proxy layer loaded")
-
 # ─────────────────────────────────────────────
 # 6. MONTHLY COMPOSITE FUNCTION
 # ─────────────────────────────────────────────
@@ -193,9 +171,7 @@ export_stations.start()
 print("Station export started: crms_sentinel2_features_v2.csv")
 
 # ── Export 2: Auxiliary variables at station locations (one-time) ──
-aux_image = (srtm.rename('elevation')
-    .addBands(dist_water_proxy.rename('dist_to_water_proxy'))
-    .addBands(modis_tss))
+aux_image = (srtm.rename('elevation'))
 
 export_aux = ee.batch.Export.table.toDrive(
     collection=aux_image.sampleRegions(
@@ -221,8 +197,6 @@ peak_composite = get_monthly_composite(2023, 7)
 wall_to_wall = (peak_composite
     .select(['NDVI', 'NDWI', 'EVI', 'B8', 'B11', 'B12'])
     .addBands(srtm.rename('elevation'))
-    .addBands(dist_water_proxy.rename('dist_to_water_proxy'))
-    .addBands(modis_tss)
     .toFloat())
 
 export_grid = ee.batch.Export.image.toDrive(
@@ -262,5 +236,3 @@ print("Monitor at: https://code.earthengine.google.com/tasks")
 print("Files will appear in Google Drive folder: CWL_RFP")
 print("\nNew features added to exports:")
 print("  elevation        — SRTM 30m elevation (NAVD88 approx)")
-print("  dist_to_water_proxy — JRC surface water occurrence inverse")
-print("  tss_proxy        — MODIS red band TSS proxy")
