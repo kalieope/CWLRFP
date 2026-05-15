@@ -11,11 +11,12 @@ import pandas as pd
 import numpy as np
 import folium
 from streamlit_folium import st_folium
+from folium.plugins import HeatMap
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os
-from hurricane_tab import render_hurricane_tab
+import json
 
 # ─────────────────────────────────────────────
 # PAGE CONFIG
@@ -96,8 +97,8 @@ PLOTLY_TEMPLATE = dict(
 # ─────────────────────────────────────────────
 @st.cache_data
 def load_data():
-    if os.path.exists('data/fused_dataset_with_hydro.csv'):
-        df_full = pd.read_csv('data/fused_dataset_with_hydro.csv')
+    if os.path.exists('data/fused_dataset_final.csv'):
+        df_full = pd.read_csv('data/fused_dataset_final.csv')
         print(f"Fused dataset: {df_full.shape}")
 
         # Add modeled outputs if not present
@@ -135,7 +136,7 @@ def load_data():
             'marsh_type': marsh_types,
             'Basin': basins,
             'accretion_median': np.random.uniform(0.5, 2.5, n),
-            'carbon_stock': np.random.normal(0.065, 0.02, n),
+            'carbon_stock_validated': np.random.normal(0.065, 0.02, n),
             'carbon_uncertainty': np.random.uniform(0.005, 0.025, n),
             'bulk_density': np.random.uniform(0.08, 0.25, n),
             'percent_organic': np.random.uniform(15, 65, n),
@@ -159,13 +160,31 @@ def load_data():
                     'Basin': row['Basin'],
                     'NDVI': row['NDVI'] + np.random.normal(0, 0.03),
                     'water_fraction': np.random.uniform(0.1, 0.5),
-                    'carbon_stock': row['carbon_stock'] + np.random.normal(0, 0.002),
+                    'carbon_stock_validated': row['carbon_stock_validated'] + np.random.normal(0, 0.002),
                     'loss_probability': row['loss_probability']
                 })
         df_time = pd.DataFrame(records)
 
     df_stations['station_id'] = df_stations['station_id'].astype(str)
     return df_stations, df_time
+
+@st.cache_data
+def load_spatial_data():
+    spatial_path = 'results/wall_to_wall_display.csv'
+    if not os.path.exists(spatial_path):
+        return None
+
+    usecols = ['lat', 'lon', 'marsh_type', 'carbon_predicted',
+               'carbon_uncertainty', 'high_uncertainty',
+               'loss_probability', 'risk_level']
+    try:
+        spatial_df = pd.read_csv(spatial_path, usecols=usecols)
+        spatial_df = spatial_df.dropna(subset=['lat', 'lon', 'loss_probability'])
+        print(f"Wall-to-wall sample: {len(spatial_df):,} pixels")
+        return spatial_df
+    except Exception as e:
+        print(f"Error loading spatial data: {e}")
+        return None
 
 @st.cache_data
 def load_rules():
@@ -183,6 +202,20 @@ def load_rules():
         'support': [0.18, 0.15, 0.22, 0.12, 0.14],
         'lift': [2.1, 1.9, 2.3, 1.8, 1.85]
     })
+
+@st.cache_data
+def load_unmonitored():
+    """Load high-risk unmonitored pixels data"""
+    path = 'results/high_risk_unmonitored.csv'
+    if not os.path.exists(path):
+        return None
+    try:
+        df = pd.read_csv(path)
+        print(f"High-risk unmonitored pixels loaded: {len(df):,}")
+        return df
+    except Exception as e:
+        print(f"Error loading unmonitored data: {e}")
+        return None
 
 # ─────────────────────────────────────────────
 # HELPERS
@@ -207,7 +240,8 @@ def carbon_color_hex(stock, vmin, vmax):
 # ─────────────────────────────────────────────
 # MAP
 # ─────────────────────────────────────────────
-def build_map(df, layer_mode, selected_id=None, zoom_station=None):
+def build_map(df, layer_mode, selected_id=None, zoom_station=None,
+              spatial_df=None, w2w_layer_mode='Loss Probability'):
     if zoom_station is not None:
         center = [zoom_station['lat'], zoom_station['lon']]
         zoom = 13
@@ -217,15 +251,25 @@ def build_map(df, layer_mode, selected_id=None, zoom_station=None):
 
     m = folium.Map(location=center, zoom_start=zoom, tiles='CartoDB dark_matter')
 
-    carbon_min = df['carbon_stock'].min()
-    carbon_max = df['carbon_stock'].max()
+    carbon_col = None
+    for col in ['carbon_stock', 'carbon_stock_validated', 'carbon_predicted']:
+        if col in df.columns:
+            carbon_col = col
+            break
 
+    if carbon_col:
+        carbon_min = df[carbon_col].min()
+        carbon_max = df[carbon_col].max()
+    else:
+        carbon_min, carbon_max = 0, 1
+
+    # Always show station markers
     for _, row in df.iterrows():
         is_selected = str(row['station_id']) == str(selected_id) if selected_id else False
 
-        if layer_mode == 'Carbon Stock':
-            color = carbon_color_hex(row['carbon_stock'], carbon_min, carbon_max)
-            primary = f"Carbon: {row['carbon_stock']:.4f} g C/cm³"
+        if layer_mode == 'Carbon Stock' and carbon_col:
+            color = carbon_color_hex(row[carbon_col], carbon_min, carbon_max)
+            primary = f"Carbon: {row[carbon_col]:.4f} g C/cm³"
         else:
             color = risk_color_hex(row['loss_probability'])
             primary = f"Loss Prob: {row['loss_probability']:.1%}"
@@ -252,8 +296,12 @@ def build_map(df, layer_mode, selected_id=None, zoom_station=None):
             popup=folium.Popup(popup_html, max_width=260)
         ).add_to(m)
 
-    # Legend
-    if layer_mode == 'Carbon Stock':
+    # Legend — station layer uses layer_mode; w2w dots use w2w_layer_mode
+    show_carbon_legend = (
+        (spatial_df is None and layer_mode == 'Carbon Stock') or
+        (spatial_df is not None and w2w_layer_mode == 'Carbon Stock')
+    )
+    if show_carbon_legend:
         legend = """
         <div style="position:fixed;bottom:20px;right:20px;z-index:1000;
                     background:#16213e;padding:12px;border-radius:4px;
@@ -273,32 +321,36 @@ def build_map(df, layer_mode, selected_id=None, zoom_station=None):
             <div><span style="color:#66bb6a;">&#9679;</span> Low (&lt;30%)</div>
         </div>"""
     m.get_root().html.add_child(folium.Element(legend))
-    # Add wall-to-wall GeoJSON layer if available
-    geojson_path = 'results/high_risk_parcels.geojson'
-    if os.path.exists(geojson_path):
-        import json
-        with open(geojson_path) as f:
-            geojson_data = json.load(f)
-        folium.GeoJson(
-            geojson_data,
-            name='Wall-to-Wall Risk',
-            style_function=lambda x: {
-                'fillColor': risk_color_hex(
-                    x['properties'].get('loss_probability', 0)
-                ),
-                'color': 'none',
-                'fillOpacity': 0.4,
-                'radius': 3
-            },
-            tooltip=folium.GeoJsonTooltip(
-                fields=['loss_probability', 'carbon_predicted',
-                        'marsh_type', 'risk_level'],
-                aliases=['Loss Prob', 'Carbon Stock',
-                        'Marsh Type', 'Risk Level'],
-                localize=True
-            )
-        ).add_to(m)
+
+    # Wall-to-wall dot layer
+    if spatial_df is not None and len(spatial_df) > 0:
+        coastal = spatial_df[
+            (spatial_df['lat'] >= 28.9) & (spatial_df['lat'] <= 30.2) &
+            (spatial_df['lon'] >= -93.5) & (spatial_df['lon'] <= -88.8)
+        ].copy()
+
+        if w2w_layer_mode == 'Carbon Stock' and 'carbon_predicted' in coastal.columns:
+            c_min = coastal['carbon_predicted'].min()
+            c_max = coastal['carbon_predicted'].max()
+            for _, row in coastal.iterrows():
+                color = carbon_color_hex(row['carbon_predicted'], c_min, c_max)
+                folium.CircleMarker(
+                    location=[row['lat'], row['lon']],
+                    radius=2, color=color, fill=True,
+                    fill_color=color, fill_opacity=0.5, weight=0
+                ).add_to(m)
+        else:
+            for risk, color in [('HIGH', '#ef5350'),
+                                 ('MODERATE', '#ffa726'),
+                                 ('LOW', '#66bb6a')]:
+                for _, row in coastal[coastal['risk_level'] == risk].iterrows():
+                    folium.CircleMarker(
+                        location=[row['lat'], row['lon']],
+                        radius=2, color=color, fill=True,
+                        fill_color=color, fill_opacity=0.5, weight=0
+                    ).add_to(m)
         folium.LayerControl().add_to(m)
+
     return m
 
 # ─────────────────────────────────────────────
@@ -318,7 +370,7 @@ def render_station_detail(s):
         <div class="label">Loss Probability (10-yr)</div>
         <div class="value {risk_class}">{s['loss_probability']:.1%} — {risk_text}</div>
         <div class="label">Carbon Stock</div>
-        <div class="value">{s['carbon_stock']:.4f} g C/cm³
+        <div class="value">{s.get('carbon_stock_validated', s.get('carbon_stock', float('nan'))):.4f} g C/cm³
             <span style="color:#a0a0b0;font-size:11px;">± {s.get('carbon_uncertainty',0):.4f}</span>
         </div>
         <div class="label">Accretion Rate</div>
@@ -334,11 +386,44 @@ def render_station_detail(s):
     </div>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
+# SPATIAL SUMMARY PANEL
+# ─────────────────────────────────────────────
+def render_spatial_summary(df):
+    if df is None or len(df) == 0:
+        st.markdown(
+            '<div class="station-panel">No wall-to-wall spatial sample loaded.</div>',
+            unsafe_allow_html=True
+        )
+        return
+
+    high_risk = int((df['loss_probability'] > 0.6).sum())
+    mean_carbon = df['carbon_predicted'].mean()
+    mean_loss = df['loss_probability'].mean()
+    high_unc = int(df['high_uncertainty'].sum())
+
+    st.markdown(f"""
+    <div class="station-panel">
+        <h4>Wall-to-Wall Spatial Summary</h4>
+        <div class="label">Sampled Pixels</div>
+        <div class="value">{len(df):,}</div>
+        <div class="label">High-Risk Pixels</div>
+        <div class="value">{high_risk:,}</div>
+        <div class="label">Mean Predicted Carbon</div>
+        <div class="value">{mean_carbon:.4f} g C/cm³</div>
+        <div class="label">Mean Loss Probability</div>
+        <div class="value">{mean_loss:.1%}</div>
+        <div class="label">High Uncertainty Pixels</div>
+        <div class="value">{high_unc:,}</div>
+    </div>""", unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────
 # MAIN APP
 # ─────────────────────────────────────────────
 def main():
     df, df_time = load_data()
+    spatial_df = load_spatial_data()
     rules = load_rules()
+    unmonitored_df = load_unmonitored()
 
     # Header
     st.markdown(
@@ -365,6 +450,25 @@ def main():
             label_visibility='collapsed'
         )
 
+        if spatial_df is not None:
+            st.markdown('<div class="section-label" style="margin-top:16px;">Map View</div>', unsafe_allow_html=True)
+            map_view = st.radio(
+                '', ['Station Map', 'Wall-to-Wall Spatial'],
+                label_visibility='collapsed'
+            )
+            if map_view == 'Wall-to-Wall Spatial':
+                st.markdown('<div class="section-label" style="margin-top:12px;">Wall-to-Wall Layer</div>', unsafe_allow_html=True)
+                w2w_layer_mode = st.radio(
+                    '', ['Loss Probability', 'Carbon Stock'],
+                    key='w2w_layer',
+                    label_visibility='collapsed'
+                )
+            else:
+                w2w_layer_mode = 'Loss Probability'
+        else:
+            map_view = 'Station Map'
+            w2w_layer_mode = 'Loss Probability'
+
         st.markdown('<div class="section-label" style="margin-top:16px;">Filters</div>', unsafe_allow_html=True)
         marsh_filter = st.multiselect(
             'Marsh Type',
@@ -375,16 +479,32 @@ def main():
         basin_filter = st.multiselect('Basin', options=basin_options, default=basin_options)
         risk_min = st.slider('Min Loss Probability', 0.0, 1.0, 0.0, 0.05)
 
-    # Filter stations
-    filtered = df[df['marsh_type'].isin(marsh_filter)].copy()
+    # Station-level filtered df — always available for all tabs
+    station_filtered = df[df['marsh_type'].isin(marsh_filter)].copy()
     if basin_filter:
-        filtered = filtered[filtered['Basin'].isin(basin_filter)]
-    filtered = filtered[filtered['loss_probability'] >= risk_min]
+        station_filtered = station_filtered[station_filtered['Basin'].isin(basin_filter)]
+    station_filtered = station_filtered[station_filtered['loss_probability'] >= risk_min]
+
+    # Map-layer filtered — only station dots when in Station Map view
+    if map_view == 'Station Map':
+        filtered = station_filtered
+    else:
+        filtered = pd.DataFrame(columns=[
+            'lat', 'lon', 'marsh_type', 'carbon_predicted',
+            'carbon_uncertainty', 'high_uncertainty',
+            'loss_probability', 'risk_level'
+        ])
+
+    # Resolved carbon column name
+    carbon_col = next(
+        (c for c in ['carbon_stock_validated', 'carbon_stock'] if c in df.columns),
+        'carbon_stock_validated'
+    )
 
     # Station search
     selected_station = None
     zoom_station = None
-    if station_search:
+    if map_view == 'Station Map' and station_search:
         match = df[df['station_id'].str.upper() == station_search.strip().upper()]
         if len(match) > 0:
             selected_station = match.iloc[0]
@@ -400,27 +520,35 @@ def main():
             else:
                 st.sidebar.error(f"'{station_search}' not found")
 
-    # KPIs
+    # KPIs — station metrics always shown from station_filtered; spatial metrics added for w2w view
     k1, k2, k3, k4, k5 = st.columns(5)
-    with k1: st.metric("Stations", f"{len(filtered)}")
-    with k2: st.metric("High Risk", f"{(filtered['loss_probability']>0.6).sum()}")
-    with k3: st.metric("Mean Carbon Stock", f"{filtered['carbon_stock'].mean():.4f} g C/cm³")
-    with k4:
-        at_risk = filtered.loc[filtered['loss_probability']>0.6, 'carbon_stock'].sum()
-        st.metric("Carbon at Risk", f"{at_risk:.3f} g C/cm³")
-    with k5:
-        lost = int(filtered['ever_lost_land'].sum()) if 'ever_lost_land' in filtered.columns else 0
-        st.metric("Confirmed Loss Events", f"{lost}")
+    with k1: st.metric("Stations", f"{len(station_filtered)}")
+    with k2: st.metric("High Risk", f"{(station_filtered['loss_probability'] > 0.6).sum()}")
+    if carbon_col in station_filtered.columns:
+        with k3: st.metric("Mean Carbon Stock", f"{station_filtered[carbon_col].mean():.4f} g C/cm³")
+        with k4:
+            at_risk = station_filtered.loc[station_filtered['loss_probability'] > 0.6, carbon_col].sum()
+            st.metric("Carbon at Risk", f"{at_risk:.3f} g C/cm³")
+    else:
+        with k3: st.metric("Mean Carbon Stock", "N/A")
+        with k4: st.metric("Carbon at Risk", "N/A")
+    if map_view == 'Wall-to-Wall Spatial' and spatial_df is not None:
+        with k5:
+            sp = spatial_df.dropna(subset=['loss_probability'])
+            st.metric("W2W Pixels", f"{len(sp):,}")
+    else:
+        with k5:
+            lost = int(station_filtered['ever_lost_land'].sum()) if 'ever_lost_land' in station_filtered.columns else 0
+            st.metric("Confirmed Loss Events", f"{lost}")
 
     st.markdown('<hr>', unsafe_allow_html=True)
 
     # View tabs
-    tab1, tab2, tab3, tab4, tab5= st.tabs([
+    tab1, tab2, tab3, tab4= st.tabs([
         "Risk Analysis",
         "Investment Priorities",
         "Field Verification Queue",
-        "Regional Overview",
-        "Hurricane Impact"
+        "Regional Overview"
     ])
 
     # ── TAB 1: RISK ANALYSIS ──
@@ -428,27 +556,55 @@ def main():
         map_col, detail_col = st.columns([3, 1])
 
         with map_col:
-            st.markdown('<div class="section-label">Station Risk Map — Louisiana Coastal Wetlands</div>',
-                        unsafe_allow_html=True)
-            st.caption(f"{len(filtered)} stations displayed | Click any marker for details")
+            map_title = 'Station Risk Map — Louisiana Coastal Wetlands'
+            if map_view == 'Wall-to-Wall Spatial':
+                map_title = 'Wall-to-Wall Spatial Map — Louisiana Coastal Wetlands'
+            st.markdown(f'<div class="section-label">{map_title}</div>', unsafe_allow_html=True)
+
+            if map_view == 'Station Map':
+                st.caption(f"{len(filtered)} stations displayed with wall-to-wall risk heatmap overlay")
+            else:
+                st.caption(f"{len(filtered):,} sampled spatial pixels displayed | Wall-to-wall estimates shown")
+
             m = build_map(
                 filtered, layer_mode,
                 selected_id=selected_station['station_id'] if selected_station is not None else None,
-                zoom_station=zoom_station
+                zoom_station=zoom_station,
+                spatial_df=spatial_df if map_view == 'Wall-to-Wall Spatial' else None,
+                w2w_layer_mode=w2w_layer_mode
             )
             st_folium(m, width=None, height=530, returned_objects=[])
 
         with detail_col:
-            st.markdown('<div class="section-label">Station Detail</div>', unsafe_allow_html=True)
-            if selected_station is not None:
-                render_station_detail(selected_station)
+            if map_view == 'Station Map':
+                st.markdown('<div class="section-label">Station Detail</div>', unsafe_allow_html=True)
+                if selected_station is not None:
+                    render_station_detail(selected_station)
+                else:
+                    st.markdown(
+                        '<div style="color:#a0a0b0;font-size:12px;padding:20px;'
+                        'border:1px dashed #0f3460;border-radius:4px;text-align:center;'>
+                        'Search a station ID<br>in the sidebar<br>to view details'
+                        '</div>', unsafe_allow_html=True
+                    )
             else:
-                st.markdown(
-                    '<div style="color:#a0a0b0;font-size:12px;padding:20px;'
-                    'border:1px dashed #0f3460;border-radius:4px;text-align:center;">'
-                    'Search a station ID<br>in the sidebar<br>to view details'
-                    '</div>', unsafe_allow_html=True
-                )
+                st.markdown('<div class="section-label">Wall-to-Wall Spatial Summary</div>', unsafe_allow_html=True)
+                render_spatial_summary(filtered)
+                
+                # Unmonitored data callout in spatial view
+                if unmonitored_df is not None and len(unmonitored_df) > 0:
+                    st.markdown('<div class="section-label" style="margin-top:12px;">Unmonitored High-Risk Areas</div>',
+                                unsafe_allow_html=True)
+                    st.markdown(f"""
+                    <div style="background:#1a2a2e;border:1px solid #ef5350;border-radius:4px;padding:10px;font-family:monospace;font-size:11px;">
+                        <div style="color:#ef5350;font-weight:600;margin-bottom:6px;">⚠️ Unknown Pixels Detected</div>
+                        <div style="color:#e0e0e0;">
+                            <div style="margin-bottom:4px;"><span style="color:#a0a0b0;">Count:</span> {len(unmonitored_df):,} pixels</div>
+                            <div style="margin-bottom:4px;"><span style="color:#a0a0b0;">Loss Prob:</span> 100% (all pixels)</div>
+                            <div style="margin-bottom:4px;"><span style="color:#a0a0b0;">Mean Carbon:</span> {unmonitored_df['carbon_predicted'].mean():.4f} g C/cm³</div>
+                            <div style="margin-bottom:4px;"><span style="color:#a0a0b0;">Avg Dist:</span> {unmonitored_df['dist_to_nearest_station_km'].mean():.1f} km to nearest station</div>
+                        </div>
+                    </div>""", unsafe_allow_html=True)
 
             st.markdown('<div class="section-label" style="margin-top:16px;">Top Risk Patterns</div>',
                         unsafe_allow_html=True)
@@ -472,13 +628,13 @@ def main():
                     unsafe_allow_html=True)
         st.caption("Ranked by carbon loss avoided per unit area — highest priority first")
 
-        ranked = filtered.copy()
-        ranked['priority_score'] = ranked['loss_probability'] * ranked['carbon_stock']
+        ranked = station_filtered.copy()
+        ranked['priority_score'] = ranked['loss_probability'] * ranked.get(carbon_col, 0)
         ranked = ranked.sort_values('priority_score', ascending=False)
 
         col_map = {
             'station_id': 'Station', 'marsh_type': 'Marsh Type', 'Basin': 'Basin',
-            'loss_probability': 'Loss Prob.', 'carbon_stock': 'Carbon Stock (g C/cm³)',
+            'loss_probability': 'Loss Prob.', carbon_col: 'Carbon Stock (g C/cm³)',
             'accretion_median': 'Accretion (cm/yr)', 'priority_score': 'Priority Score'
         }
         avail = {k: v for k, v in col_map.items() if k in ranked.columns}
@@ -499,12 +655,12 @@ def main():
         with c1:
             st.markdown('<div class="section-label">Carbon Stock by Marsh Type</div>',
                         unsafe_allow_html=True)
-            carbon_by_marsh = filtered.groupby('marsh_type')['carbon_stock'].mean().reset_index()
+            carbon_by_marsh = station_filtered.groupby('marsh_type')[carbon_col].mean().reset_index()
             fig = go.Figure(go.Bar(
                 x=carbon_by_marsh['marsh_type'],
-                y=carbon_by_marsh['carbon_stock'],
+                y=carbon_by_marsh[carbon_col],
                 marker_color=['#4fc3f7', '#81d4fa', '#b3e5fc', '#e1f5fe'],
-                text=carbon_by_marsh['carbon_stock'].round(4),
+                text=carbon_by_marsh[carbon_col].round(4),
                 textposition='outside'
             ))
             fig.update_layout(
@@ -517,8 +673,8 @@ def main():
         with c2:
             st.markdown('<div class="section-label">High Risk Stations by Basin</div>',
                         unsafe_allow_html=True)
-            if 'Basin' in filtered.columns:
-                basin_risk = filtered.groupby('Basin').agg(
+            if 'Basin' in station_filtered.columns:
+                basin_risk = station_filtered.groupby('Basin').agg(
                     high_risk=('loss_probability', lambda x: (x > 0.6).sum()),
                     total=('loss_probability', 'count')
                 ).reset_index()
@@ -543,8 +699,8 @@ def main():
                     unsafe_allow_html=True)
         st.caption("Stations matching temporal precursor signatures — prioritize before next satellite pass")
 
-        flagged = filtered[
-            (filtered['loss_probability'] > 0.5) & (filtered['NDVI'] < 0.4)
+        flagged = station_filtered[
+            (station_filtered['loss_probability'] > 0.5) & (station_filtered['NDVI'] < 0.4)
         ].sort_values('loss_probability', ascending=False)
 
         if len(flagged) > 0:
@@ -574,6 +730,61 @@ def main():
         else:
             st.info("No stations flagged under current filter settings.")
 
+        # ── UNMONITORED HIGH-RISK AREAS ──
+        if unmonitored_df is not None and len(unmonitored_df) > 0:
+            st.markdown('<hr>', unsafe_allow_html=True)
+            st.markdown('<div class="section-label">High-Risk Unmonitored Areas (Unknown Stations)</div>',
+                        unsafe_allow_html=True)
+            st.caption(f"Spatial pixels without nearby CRMS stations — {len(unmonitored_df):,} high-risk locations identified")
+
+            st.markdown(
+                f'<div style="background:#1a2a2e;border:1px solid #ef5350;'
+                f'border-radius:4px;padding:10px;margin-bottom:12px;'
+                f'font-family:monospace;font-size:12px;color:#ef5350;">'
+                f'⚠️ {len(unmonitored_df):,} unmonitored pixels with 100% predicted loss probability'
+                f'</div>', unsafe_allow_html=True
+            )
+
+            # Summary stats on unmonitored
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric(
+                    "Unmonitored Pixels", f"{len(unmonitored_df):,}",
+                    f"Median dist to station: {unmonitored_df['dist_to_nearest_station_km'].median():.1f} km"
+                )
+            with col2:
+                avg_carbon = unmonitored_df['carbon_predicted'].mean()
+                st.metric("Avg Carbon (g C/cm³)", f"{avg_carbon:.4f}",
+                          f"Total at risk: {unmonitored_df['carbon_predicted'].sum():.2f}")
+            with col3:
+                brackish_pct = (unmonitored_df['marsh_type'] == 'Brackish').sum() / len(unmonitored_df) * 100
+                st.metric("Brackish Marsh", f"{brackish_pct:.0f}%",
+                          f"n={int((unmonitored_df['marsh_type'] == 'Brackish').sum())}")
+            with col4:
+                intermediate_pct = (unmonitored_df['marsh_type'] == 'Intermediate').sum() / len(unmonitored_df) * 100
+                st.metric("Intermediate Marsh", f"{intermediate_pct:.0f}%",
+                          f"n={int((unmonitored_df['marsh_type'] == 'Intermediate').sum())}")
+
+            # Display unmonitored sample
+            unmon_cols = ['lat', 'lon', 'marsh_type', 'carbon_predicted', 
+                          'loss_probability', 'dist_to_nearest_station_km']
+            unmon_display = unmonitored_df[unmon_cols].head(20)
+            col_rename = {
+                'lat': 'Latitude', 'lon': 'Longitude', 'marsh_type': 'Marsh Type',
+                'carbon_predicted': 'Carbon (g/cm³)', 'loss_probability': 'Loss Prob.',
+                'dist_to_nearest_station_km': 'Dist to Station (km)'
+            }
+            st.dataframe(
+                unmon_display.rename(columns=col_rename)
+                .style.format({
+                    'Latitude': '{:.5f}', 'Longitude': '{:.5f}',
+                    'Carbon (g/cm³)': '{:.4f}', 'Loss Prob.': '{:.0%}',
+                    'Dist to Station (km)': '{:.1f}'
+                }),
+                use_container_width=True, height=300
+            )
+            st.caption(f"Showing first 20 of {len(unmonitored_df):,} unmonitored high-risk pixels")
+
         st.markdown('<hr>', unsafe_allow_html=True)
         st.markdown("""
         <div style="font-family:monospace;font-size:12px;color:#b0bec5;
@@ -600,7 +811,7 @@ def main():
 
         with r1c1:
             fig_hist = go.Figure(go.Histogram(
-                x=filtered['loss_probability'],
+                x=station_filtered['loss_probability'],
                 nbinsx=20,
                 marker_color='#4fc3f7',
                 marker_line_color='#0f3460',
@@ -621,7 +832,7 @@ def main():
             st.plotly_chart(fig_hist, use_container_width=True)
 
         with r1c2:
-            marsh_counts = filtered['marsh_type'].value_counts().reset_index()
+            marsh_counts = station_filtered['marsh_type'].value_counts().reset_index()
             marsh_counts.columns = ['Marsh Type', 'Count']
             fig_pie = go.Figure(go.Pie(
                 labels=marsh_counts['Marsh Type'],
@@ -642,8 +853,8 @@ def main():
 
         with r2c1:
             fig_scatter = px.scatter(
-                filtered,
-                x='carbon_stock', y='loss_probability',
+                station_filtered,
+                x=carbon_col, y='loss_probability',
                 color='marsh_type',
                 hover_data=['station_id', 'Basin'],
                 color_discrete_sequence=px.colors.qualitative.Set2,
@@ -662,8 +873,8 @@ def main():
             fig_box = go.Figure()
             colors = {'Fresh': '#4fc3f7', 'Intermediate': '#81d4fa',
                       'Brackish': '#ffa726', 'Saline': '#ef5350'}
-            for mtype in filtered['marsh_type'].dropna().unique():
-                subset = filtered[filtered['marsh_type'] == mtype]['NDVI'].dropna()
+            for mtype in station_filtered['marsh_type'].dropna().unique():
+                subset = station_filtered[station_filtered['marsh_type'] == mtype]['NDVI'].dropna()
                 fig_box.add_trace(go.Box(
                     y=subset, name=mtype,
                     marker_color=colors.get(mtype, '#4fc3f7'),
@@ -678,16 +889,96 @@ def main():
             )
             st.plotly_chart(fig_box, use_container_width=True)
 
+        # ── UNMONITORED VS MONITORED COMPARISON ──
+        if unmonitored_df is not None and len(unmonitored_df) > 0:
+            st.markdown('<div class="section-label" style="margin-top:16px;">Monitored vs. Unmonitored Gap Analysis</div>',
+                        unsafe_allow_html=True)
+            st.caption("Comparison of monitored CRMS stations with unmapped high-risk coastal pixels")
+
+            # Create comparison metrics
+            comp_col1, comp_col2, comp_col3 = st.columns(3)
+            
+            monitored_count = len(station_filtered)
+            unmonitored_count = len(unmonitored_df)
+            gap_ratio = unmonitored_count / monitored_count if monitored_count > 0 else 0
+
+            with comp_col1:
+                st.metric(
+                    "Monitoring Gap",
+                    f"{gap_ratio:.1f}x",
+                    f"{unmonitored_count:,} unmapped vs {monitored_count:,} stations"
+                )
+
+            monitored_carbon = station_filtered[carbon_col].sum() if carbon_col in station_filtered.columns else 0
+            unmonitored_carbon = unmonitored_df['carbon_predicted'].sum()
+            total_carbon = monitored_carbon + unmonitored_carbon
+
+            with comp_col2:
+                st.metric(
+                    "Carbon at Risk — Unmonitored",
+                    f"{unmonitored_carbon:.2f}",
+                    f"{unmonitored_carbon/total_carbon*100:.1f}% of total" if total_carbon > 0 else "N/A"
+                )
+
+            # Average loss probability
+            monitored_loss_prob = station_filtered['loss_probability'].mean()
+            unmonitored_loss_prob = unmonitored_df['loss_probability'].mean()
+
+            with comp_col3:
+                st.metric(
+                    "Avg Loss Probability — Unmonitored",
+                    f"{unmonitored_loss_prob:.1%}",
+                    f"vs {monitored_loss_prob:.1%} monitored"
+                )
+
+            # Marsh type comparison
+            fig_marsh_comp = go.Figure()
+            
+            # Monitored marsh distribution
+            monitored_marsh = station_filtered['marsh_type'].value_counts().reset_index()
+            monitored_marsh.columns = ['Marsh Type', 'Count']
+            monitored_marsh['Category'] = 'Monitored'
+            
+            # Unmonitored marsh distribution
+            unmonitored_marsh = unmonitored_df['marsh_type'].value_counts().reset_index()
+            unmonitored_marsh.columns = ['Marsh Type', 'Count']
+            unmonitored_marsh['Category'] = 'Unmonitored'
+            
+            marsh_comp = pd.concat([monitored_marsh, unmonitored_marsh], ignore_index=True)
+            
+            fig_marsh_comp = px.bar(
+                marsh_comp, x='Marsh Type', y='Count', color='Category',
+                barmode='group',
+                color_discrete_map={'Monitored': '#81d4fa', 'Unmonitored': '#ef5350'},
+                title='Marsh Type Distribution: Monitored vs Unmonitored'
+            )
+            fig_marsh_comp.update_layout(**PLOTLY_TEMPLATE['layout'])
+            st.plotly_chart(fig_marsh_comp, use_container_width=True)
+
+            # Unmonitored spatial statistics
+            st.markdown('<div class="section-label" style="margin-top:12px;">Unmonitored Pixels — Spatial Distribution</div>',
+                        unsafe_allow_html=True)
+            
+            unmon_col1, unmon_col2, unmon_col3, unmon_col4 = st.columns(4)
+            with unmon_col1:
+                st.metric("Total Unmonitored Pixels", f"{len(unmonitored_df):,}")
+            with unmon_col2:
+                st.metric("Mean Distance to Station", f"{unmonitored_df['dist_to_nearest_station_km'].mean():.1f} km")
+            with unmon_col3:
+                st.metric("Median Carbon Predicted", f"{unmonitored_df['carbon_predicted'].median():.4f}")
+            with unmon_col4:
+                st.metric("Loss Probability", f"{(unmonitored_df['loss_probability']==1.0).sum():,} @ 100%")
+
         # Row 3: Basin-level summary table
         st.markdown('<div class="section-label" style="margin-top:8px;">Basin-Level Summary</div>',
                     unsafe_allow_html=True)
-        if 'Basin' in filtered.columns:
-            basin_summary = filtered.groupby('Basin').agg(
+        if 'Basin' in station_filtered.columns:
+            basin_summary = station_filtered.groupby('Basin').agg(
                 Stations=('station_id', 'count'),
                 High_Risk_Stations=('loss_probability', lambda x: (x > 0.6).sum()),
                 Mean_Loss_Probability=('loss_probability', 'mean'),
-                Mean_Carbon_Stock=('carbon_stock', 'mean'),
-                Total_Carbon_Stock=('carbon_stock', 'sum'),
+                Mean_Carbon_Stock=(carbon_col, 'mean'),
+                Total_Carbon_Stock=(carbon_col, 'sum'),
                 Mean_NDVI=('NDVI', 'mean')
             ).reset_index().sort_values('Mean_Loss_Probability', ascending=False)
 
@@ -703,10 +994,10 @@ def main():
 
         # Key findings callout
         st.markdown('<hr>', unsafe_allow_html=True)
-        high_pct = (filtered['loss_probability'] > 0.6).mean()
-        top_basin = filtered.groupby('Basin')['loss_probability'].mean().idxmax() \
-            if 'Basin' in filtered.columns else 'N/A'
-        highest_risk_marsh = filtered.groupby('marsh_type')['loss_probability'].mean().idxmax()
+        high_pct = (station_filtered['loss_probability'] > 0.6).mean()
+        top_basin = station_filtered.groupby('Basin')['loss_probability'].mean().idxmax() \
+            if 'Basin' in station_filtered.columns else 'N/A'
+        highest_risk_marsh = station_filtered.groupby('marsh_type')['loss_probability'].mean().idxmax()
 
         st.markdown(f"""
         <div style="background:#16213e;border:1px solid #0f3460;border-left:3px solid #4fc3f7;
@@ -724,18 +1015,13 @@ def main():
                 high-risk stations represent a disproportionate share of total carbon sink capacity
             </div>
         </div>""", unsafe_allow_html=True)
-    
-    # u2500u2500 TAB 5: HURRICANE IMPACT u2500u2500
-    with tab5:
-        render_hurricane_tab(df, PLOTLY_TEMPLATE)
 
     # Footer
     st.markdown('<hr>', unsafe_allow_html=True)
     st.markdown(
         '<p style="color:#4a4a6a;font-size:10px;font-family:monospace;letter-spacing:1px;">'
-        'CWL-026-001 &nbsp;|&nbsp; CSC 580 &nbsp;|&nbsp; LOUISIANA TECH UNIVERSITY &nbsp;|&nbsp;'
-        'DATA: CRMS · SENTINEL-2 · USGS LANDSAT · NASA ORNL DAAC &nbsp;|&nbsp;'
-        'PIPELINE UPDATES AUTOMATICALLY ON NEW DATA INGESTION'
+        'CWL-026-001 &nbsp;|&nbsp; CSC 5803 &nbsp;|&nbsp; LOUISIANA TECH UNIVERSITY &nbsp;|&nbsp;'
+        'KALEIGH POWELL &nbsp;|&nbsp;'
         '</p>', unsafe_allow_html=True
     )
 

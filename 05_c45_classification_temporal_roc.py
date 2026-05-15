@@ -58,19 +58,28 @@ os.makedirs('models', exist_ok=True)
 # 
 # ─────────────────────────────────────────────
 CLASSIFICATION_FEATURES = [
-    'NDVI', 'NDWI', 'EVI', 'B8', 'B11', 'B12',
-    'bulk_density', 'percent_organic',
-    # Marsh type one-hot (added during preprocessing)
-    'marsh_Fresh', 'marsh_Intermediate', 'marsh_Brackish', 'marsh_Saline',
-    # Temporal lag features (added below)
+    # Spectral (Thomas et al. 2019)
+    'NDVI', 'EVI',
+    # Hydrological (Chenevert & Edmonds 2024)
+    'tidal_amplitude_annual_mean',
+    'flood_depth_annual_mean',
+    'salinity_annual_mean',
+    'percent_flooded',
+    # Soil (Baustian et al. 2021)
+    'bulk_density',
+    'percent_organic',
+    # Elevation
+    'elevation_m',
+    # Storm (justified by Louisiana hurricane history)
+    'storm_year',
+    # Temporal lags (sequential mining)
     'NDVI_lag3', 'NDVI_lag12',
-    # After hydro merge:
-     'tidal_amplitude_annual_mean', 'flood_depth_annual_mean', 'salinity_annual_mean',
-     'dist_to_water_log', 'dist_to_river_log',
-     'flood_depth_lag3', 'flood_depth_lag12', 'salinity_lag3', 'elevation_m'
+    # Marsh type
+    'marsh_Fresh', 'marsh_Intermediate',
+    'marsh_Brackish', 'marsh_Saline',
 ]
 
-TARGET = 'ever_lost_land'
+TARGET = 'recent_land_loss'
 
 # ─────────────────────────────────────────────
 # FEATURE ENGINEERING

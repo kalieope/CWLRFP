@@ -51,3 +51,6 @@ data/deltax_rtk_elevation.csv
 data/deltax_soil_properties.csv
 data/ornl_carbon_spatial.csv
 data/ornl_tidal_wetland_soil_carbon.tif
+data/crms_flooded_station_year.csv
+data/crms_flooded_summary.csv
+data/crms_recent_loss.csv

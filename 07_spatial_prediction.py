@@ -181,7 +181,7 @@ def assign_marsh_ndvi(pixel_df):
 # ─────────────────────────────────────────────
 def train_spatial_gpr(
         pixel_df,
-        fused_path='data/fused_dataset_with_hydro.csv'):
+        fused_path='data/fused_dataset_final.csv'):
     from sklearn.gaussian_process import GaussianProcessRegressor
     from sklearn.gaussian_process.kernels import (
         RBF, WhiteKernel, ConstantKernel
@@ -255,7 +255,7 @@ def train_spatial_gpr(
 # ─────────────────────────────────────────────
 def train_spatial_c45(
         pixel_df,
-        fused_path='data/fused_dataset_with_hydro.csv'):
+        fused_path='data/fused_dataset_final.csv'):
     from sklearn.tree import DecisionTreeClassifier
     from sklearn.preprocessing import StandardScaler
 
@@ -387,7 +387,7 @@ def predict_loss_wall_to_wall(pixel_df, clf, scaler, features):
     pixel_df.loc[pixel_df_clean.index, 'loss_probability'] = probs
     pixel_df['risk_level'] = pd.cut(
         pixel_df['loss_probability'],
-        bins=[0, 0.3, 0.6, 1.0],
+        bins=[0, 0.4, 0.75, 1.0],
         labels=['LOW', 'MODERATE', 'HIGH']
     )
 
@@ -556,8 +556,10 @@ def run_spatial_prediction():
     if 'loss_probability' in pixel_df.columns:
         export_high_risk_geojson(pixel_df)
 
-    print("\nSaving raster outputs...")
-    save_raster_predictions(pixel_df, transform, profile, height, width)
+
+    #Raster saving skipped for speed for now-- CSV and GeoJSON is more important for dashboard.
+    #print("\nSaving raster outputs...")
+    #save_raster_predictions(pixel_df, transform, profile, height, width)
 
     # Summary
     print("\n" + "=" * 60)

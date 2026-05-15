@@ -366,7 +366,7 @@ def render_hurricane_tab(df, PLOTLY_TEMPLATE):
                 unsafe_allow_html=True)
 
     try:
-        from storm_events import (GULF_STORMS, STORM_SCENARIOS,
+        from hurricaneImplementation.storm_events import (GULF_STORMS, STORM_SCENARIOS,
                                    get_storm_affected_stations,
                                    simulate_storm_impact)
     except ImportError:

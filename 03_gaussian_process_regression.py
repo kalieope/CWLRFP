@@ -58,24 +58,35 @@ os.makedirs('models', exist_ok=True)
 # Spectral features (NDVI, NDWI, EVI, B8, B11, B12) from GEE export
 # ─────────────────────────────────────────────
 FEATURE_SETS = {
-      'freshwater_intermediate': [
-        'NDVI', 'NDWI', 'EVI', 'B8', 'B11', 'B12',
-        'bulk_density', 'percent_organic',
+    'freshwater_intermediate': [
+        # Soil (Baustian et al. 2021 — primary carbon predictors)
+        'bulk_density',
+        'percent_organic',
+        # Hydrological (Chenevert & Edmonds 2024 — top predictors)
         'tidal_amplitude_annual_mean',
         'flood_depth_annual_mean',
         'salinity_annual_mean',
+        # Spectral (Thomas et al. 2019 — validated for Louisiana)
+        'NDVI',
+        'EVI',
+        # Elevation (controls inundation duration)
         'elevation_m',
     ],
     'brackish': [
-    'bulk_density', 'percent_organic',
-    'tidal_amplitude_annual_mean', 'elevation_m',
+        'bulk_density',
+        'percent_organic',
+        'tidal_amplitude_annual_mean',
+        'elevation_m',
     ],
     'saline': [
-        'NDVI', 'NDWI', 'EVI', 'B8', 'B11', 'B12',
-        'bulk_density', 'percent_organic',
+        'bulk_density',
+        'percent_organic',
         'tidal_amplitude_annual_mean',
         'flood_depth_annual_mean',
-        'salinity_annual_mean', 'elevation_m',
+        'salinity_annual_mean',
+        'NDVI',
+        'EVI',
+        'elevation_m',
     ]
 }
 

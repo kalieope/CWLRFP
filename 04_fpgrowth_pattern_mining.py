@@ -37,21 +37,21 @@ BINS = {
         'bins': [-1, 0.2, 0.5, 1.0],
         'labels': ['ndvi_low', 'ndvi_moderate', 'ndvi_high']
     },
-    'NDWI': {
-        'bins': [-1, 0.0, 0.3, 1.0],
-        'labels': ['ndwi_low', 'ndwi_moderate', 'ndwi_high']
-    },
     'accretion_median': {
         'bins': [0, 2, 5, np.inf],
         'labels': ['accretion_low', 'accretion_moderate', 'accretion_high']
     },
-    'ever_lost_land': {
-    'bins': [-0.5, 0.5, 1.5],
-    'labels': ['land_loss_NO', 'land_loss_YES']
-    },
     'elevation_m': {
     'bins': [-np.inf, -0.5, 0.5, np.inf],
     'labels': ['elev_below_sea', 'elev_near_sea', 'elev_above_sea']
+    },
+    'percent_flooded': {
+    'bins': [0, 30, 70, 100],
+    'labels': ['flooded_low', 'flooded_moderate', 'flooded_high']
+    },
+    'recent_land_loss': {
+    'bins': [-0.5, 0.5, 1.5],
+    'labels': ['recent_loss_NO', 'recent_loss_YES']
     },
 }
 
@@ -77,11 +77,13 @@ def discretize_features(df):
         df_disc['marsh_bin'] = 'marsh_' + df_disc['marsh_type'].str.lower()
 
     # Land loss label (binary outcome from Landsat)
-    if 'land_loss' in df_disc.columns:
-        df_disc['loss_bin'] = df_disc['land_loss'].map(
+    # Recent land loss label (2015+) — more meaningful than cumulative historical
+    loss_col = 'recent_land_loss' if 'recent_land_loss' in df_disc.columns \
+               else 'ever_lost_land'
+    if loss_col in df_disc.columns:
+        df_disc['loss_bin'] = df_disc[loss_col].map(
             {1: 'land_loss_YES', 0: 'land_loss_NO'}
         )
-
     return df_disc
 
 # ─────────────────────────────────────────────
@@ -177,11 +179,11 @@ def extract_loss_rules(rules):
         return pd.DataFrame()
 
     loss_rules = rules[
-        rules['consequents'].apply(lambda x: 'land_loss_YES' in str(x))
+        rules['consequents'].apply(lambda x: 'recent_loss_YES' in str(x))
     ].copy()
 
     if len(loss_rules) == 0:
-        print("No land loss rules found — check if land_loss_YES bin exists in transactions")
+        print("No land loss rules found — check if recent_loss_YES bin exists in transactions")
         print("All rules found:")
         print(rules[['antecedents', 'consequents', 'support', 'confidence', 'lift']].head(10))
         return pd.DataFrame()
