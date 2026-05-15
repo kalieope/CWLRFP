@@ -139,7 +139,7 @@ print(f"Composite collection ready: {len(composites)} images")
 
 # ─────────────────────────────────────────────
 # 8. EXTRACT STATION FEATURES
-# Sentinel-2 + elevation + dist_water + TSS at each station
+# Sentinel-2 + elevation
 # ─────────────────────────────────────────────
 def extract_station_features(image):
     date = ee.Date(image.get('system:time_start'))
