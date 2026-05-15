@@ -3,34 +3,39 @@
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PURPOSE:
     Trains a C4.5 Decision Tree classifier to predict parcel-level
-    wetland-to-open-water conversion within a 10-year horizon.
-    C4.5 is chosen specifically because it produces human-readable
-    if-then rules that restoration planners can act on directly (C6).
-    
-    Once trained, the saved model can score new data without retraining.
+    wetland-to-open-water conversion. C4.5 is chosen because it
+    produces human-readable if-then rules restoration planners can
+    act on directly.
+
+    Target variable: loss_severity — 3-class ordinal (LOW/MODERATE/HIGH)
+    added by fix_loss_target.py + fix_integrate.py.
+    Run those two scripts after 02 before running this one.
+
+    Once trained, the saved model can score new data without retraining
+    (see rescore_new_data()).
 
 INPUTS:
-    data/fused_dataset_final.csv    — CRMS + Sentinel-2 merged features
-    data/crms_loss_timeseries.csv   — Year-by-year land/water labels
+    data/fused_dataset_final.csv    — fused dataset with recent_land_loss
+                                      column (added by fix_integrate.py)
 
 OUTPUTS:
-    models/c45_model.pkl            — Saved trained model
-    models/c45_scaler.pkl           — Saved feature scaler
-    models/c45_features.pkl         — Saved feature list
-    results/c45_rules.txt           — Plain-language if-then rules
-    results/c45_cv_results.csv      — Spatially blocked CV performance
-    results/temporal_roc_results.csv— ROC-AUC per future time slice
-    figures/temporal_roc.png        — Temporal ROC curves
-    figures/c45_tree.png            — Decision tree visualization
+    models/c45_model.pkl             — trained C4.5 classifier
+    models/c45_scaler.pkl            — fitted feature scaler
+    models/c45_features.pkl          — selected feature list
+    results/c45_rules.txt            — plain-language if-then rules
+    results/c45_cv_results.csv       — spatially blocked CV performance
+    results/temporal_roc_results.csv — ROC-AUC per time horizon
+    results/rfp_classifier_report.csv— precision/recall/F1 report
+    figures/temporal_roc.png         — temporal ROC curves
+    figures/c45_tree.png             — decision tree visualization
 
 WHEN TO RE-RUN:
-    Full retrain (this script): Annually, or after major storm events
-    Re-score only (--rescore flag): When new CRMS/Sentinel-2 data arrives
+    Full retrain (this script): annually, or after major storm events
+    Re-score only (rescore_new_data): when new CRMS/Sentinel-2 data arrives
 
 VALIDATION DESIGN:
-    Temporal ROC: ROC-AUC evaluated at 1-year, 3-year, 5-year ahead
-    Spatially blocked CV: Folds by geographic block, not random split
-    Both designs prevent data leakage from spatial/temporal autocorrelation
+    Temporal ROC: ROC-AUC at 1-year, 3-year, 5-year look-ahead slices
+    Spatially blocked CV: folds by geographic block to prevent leakage
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -79,7 +84,7 @@ CLASSIFICATION_FEATURES = [
     'marsh_Brackish', 'marsh_Saline',
 ]
 
-TARGET = 'recent_land_loss'
+TARGET = 'loss_severity'  # 3-class ordinal: LOW / MODERATE / HIGH
 
 # ─────────────────────────────────────────────
 # FEATURE ENGINEERING
@@ -214,22 +219,33 @@ def temporal_roc_validation(df, features, target):
         X_test = df.loc[test_mask, available].values
         y_test = df.loc[test_mask, target].values
         X_test_s = scaler.transform(X_test)
-        y_prob = clf.predict_proba(X_test_s)[:, 1]
+        y_proba = clf.predict_proba(X_test_s)
         y_pred = clf.predict(X_test_s)
 
         if len(np.unique(y_test)) > 1:
-            auc = roc_auc_score(y_test, y_prob)
-            f1 = f1_score(y_test, y_pred, zero_division=0)
-            fpr, tpr, _ = roc_curve(y_test, y_prob)
+            auc = roc_auc_score(
+                y_test, y_proba,
+                multi_class='ovr', average='macro',
+                labels=clf.classes_
+            )
+            f1 = f1_score(
+                y_test, y_pred, average='macro', zero_division=0
+            )
+
+            # Plot HIGH-class one-vs-rest ROC for interpretability
+            high_idx = list(clf.classes_).index('HIGH') \
+                if 'HIGH' in clf.classes_ else 0
+            y_test_bin = (y_test == 'HIGH').astype(int)
+            fpr, tpr, _ = roc_curve(y_test_bin, y_proba[:, high_idx])
 
             temporal_results[horizon] = {
-                'auc': auc, 'f1': f1,
+                'auc_macro_ovr': auc, 'f1_macro': f1,
                 'n_test': len(y_test),
-                'n_loss': int(y_test.sum())
+                'n_high': int((y_test == 'HIGH').sum())
             }
 
             ax.plot(fpr, tpr, color='#4fc3f7', linewidth=2,
-                    label=f'AUC={auc:.3f}')
+                    label=f'HIGH OvR AUC={auc:.3f}')
             ax.plot([0, 1], [0, 1], color='#a0a0b0',
                     linestyle='--', alpha=0.5)
             ax.set_xlabel('False Positive Rate', color='#a0a0b0')
@@ -290,23 +306,43 @@ def spatially_blocked_cv(df, features, target, n_blocks=5):
 
         clf = build_c45()
         clf.fit(X_train_s, y_train)
-        y_prob = clf.predict_proba(X_test_s)[:, 1]
+        y_proba = clf.predict_proba(X_test_s)
         y_pred = clf.predict(X_test_s)
 
-        if len(np.unique(y_test)) > 1:
-            auc = roc_auc_score(y_test, y_prob)
-            f1 = f1_score(y_test, y_pred, zero_division=0)
+        test_classes = set(np.unique(y_test))
+        all_classes_present = test_classes >= set(clf.classes_)
+
+        if len(test_classes) > 1 and all_classes_present:
+            auc = roc_auc_score(
+                y_test, y_proba,
+                multi_class='ovr', average='macro',
+                labels=clf.classes_
+            )
+            f1 = f1_score(
+                y_test, y_pred, average='macro', zero_division=0
+            )
             aucs.append(auc)
             f1s.append(f1)
             print(f"  Block {block}: AUC={auc:.3f} | F1={f1:.3f} | n={len(y_test)}")
+        else:
+            f1 = f1_score(y_test, y_pred, average='macro', zero_division=0)
+            f1s.append(f1)
+            missing = set(clf.classes_) - test_classes
+            print(f"  Block {block}: AUC=skipped (missing classes: {missing}) | "
+                  f"F1={f1:.3f} | n={len(y_test)}")
 
-    if aucs:
+    if f1s:
         cv_results = {
-            'mean_auc': np.mean(aucs), 'std_auc': np.std(aucs),
-            'mean_f1': np.mean(f1s), 'std_f1': np.std(f1s)
+            'mean_auc': np.mean(aucs) if aucs else float('nan'),
+            'std_auc': np.std(aucs) if aucs else float('nan'),
+            'mean_f1': np.mean(f1s), 'std_f1': np.std(f1s),
+            'n_blocks_with_auc': len(aucs)
         }
-        print(f"\n  Mean AUC: {cv_results['mean_auc']:.3f} "
-              f"± {cv_results['std_auc']:.3f}")
+        if aucs:
+            print(f"\n  Mean AUC ({len(aucs)} blocks): "
+                  f"{cv_results['mean_auc']:.3f} ± {cv_results['std_auc']:.3f}")
+        else:
+            print("\n  Mean AUC: n/a (no block had all 3 classes in test set)")
         print(f"  Mean F1:  {cv_results['mean_f1']:.3f} "
               f"± {cv_results['std_f1']:.3f}")
         pd.DataFrame([cv_results]).to_csv(
@@ -393,14 +429,20 @@ def rescore_new_data(new_data_path='data/fused_dataset_final.csv',
     X = df_clean[available].values
     X_scaled = scaler.transform(X)
 
-    y_prob = clf.predict_proba(X_scaled)[:, 1]
+    y_proba = clf.predict_proba(X_scaled)
     y_pred = clf.predict(X_scaled)
 
+    # Weighted risk score: 0*P(LOW) + 0.5*P(MODERATE) + 1.0*P(HIGH)
+    # Uses clf.classes_ ordering (alphabetical: HIGH, LOW, MODERATE)
+    class_weights = {'LOW': 0.0, 'MODERATE': 0.5, 'HIGH': 1.0}
+    weight_array = np.array([class_weights[c] for c in clf.classes_])
+    risk_score = np.clip(y_proba @ weight_array, 0.02, 0.97)
+
     df_clean = df_clean.copy()
-    df_clean['loss_probability'] = y_prob
+    df_clean['loss_probability'] = risk_score
     df_clean['loss_predicted'] = y_pred
     df_clean['risk_level'] = pd.cut(
-        y_prob,
+        risk_score,
         bins=[0, 0.3, 0.6, 1.0],
         labels=['LOW', 'MODERATE', 'HIGH']
     )
@@ -423,7 +465,7 @@ def visualize_tree(clf, feature_names, max_depth=4):
     ax.set_facecolor('#1a1a2e')
     plot_tree(
         clf, feature_names=feature_names,
-        class_names=['Stable', 'Land Loss'],
+        class_names=['HIGH', 'LOW', 'MODERATE'],  # alphabetical — matches clf.classes_
         filled=True, rounded=True,
         max_depth=max_depth, ax=ax, fontsize=8
     )

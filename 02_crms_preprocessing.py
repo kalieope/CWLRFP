@@ -2,11 +2,13 @@
 02_crms_preprocessing.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PURPOSE:
-    Complete CRMS data preprocessing pipeline — consolidates all
-    data merging into one script.
+    Complete CRMS data preprocessing pipeline. Loads all ground-based
+    monitoring datasets, merges them at the station level, fuses with
+    Sentinel-2 spectral features, and writes the analysis-ready dataset
+    consumed by every downstream model script.
 
 INPUTS (place all in data/ folder):
-    crms_stations_coords.csv / crms_all_stations_coords.csv
+    crms_all_stations_coords.csv / crms_stations_coords.csv
     crms_marsh_class.csv
     crms_accretion_rates.csv
     crms_bulk_density.csv
@@ -14,22 +16,27 @@ INPUTS (place all in data/ folder):
     crms_land_water.csv
     crms_hydro_averages.csv
     crms_percent_flooded.csv
-    crms_sentinel2_features.csv      (from GEE)
-    deltaic_plain_elevation_30m.tif  (from GEE)
-    baustian_longterm_carbon.csv     (from ScienceBase)
-    deltax_soil_properties.csv       (from ORNL DAAC)
+    crms_sentinel2_features.csv      (from 01_gee_sentinel2_pipeline.py)
+    deltaic_plain_elevation_30m.tif  (optional — extracted from GEE)
 
 OUTPUTS:
-    data/crms_master.csv             — station-level dataset
-    data/fused_dataset_final.csv     — full analysis-ready dataset
-    data/crms_freshwater_intermediate.csv
-    data/crms_brackish.csv
-    data/crms_saline.csv
-    data/carbon_training_labels.csv
-    data/carbon_validation_set.csv
+    data/crms_master.csv                  — station-level merged dataset
+    data/fused_dataset_final.csv          — station-month fused dataset
+                                            (primary input for 03/04/05/07)
+    data/crms_freshwater_intermediate.csv — habitat split
+    data/crms_brackish.csv                — habitat split
+    data/crms_saline.csv                  — habitat split
+    data/crms_marsh_timeseries.csv
+    data/crms_loss_timeseries.csv
+    data/crms_hydro_station_year.csv
+    data/crms_flooded_station_year.csv
+    data/carbon_training_labels.csv       — requires integrate_ornl_baustian.py
+    data/carbon_validation_set.csv        — requires integrate_ornl_baustian.py
 
 EXECUTION ORDER:
     python 02_crms_preprocessing.py
+    python fix_loss_target.py
+    python fix_integrate.py
     (then run 03, 04, 05, 07, 06)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -180,11 +187,29 @@ def load_land_water():
         water_fraction_latest=('water_fraction', 'last'),
     ).reset_index()
     print(f"Stations with loss events: {station_loss['ever_lost_land'].sum()}")
-    # Create recent loss flag (2015+) — more meaningful than cumulative historical
-    recent_loss = df[df['map_year'] >= 2015].groupby('station_id').agg(
-        recent_land_loss=('land_loss', 'max')
+    
+    # Create recent loss metrics (2015+) — compute both binary flag and continuous rate
+    recent_df = df[df['map_year'] >= 2015].copy()
+    recent_loss = recent_df.groupby('station_id').agg(
+        recent_land_loss_binary=('land_loss', 'max'),  # Any loss event 2015+
+        recent_loss_count=('land_loss', 'sum'),        # Number of loss events
+        recent_years_total=('land_loss', 'count')      # Total years observed
     ).reset_index()
-    station_loss = station_loss.merge(recent_loss, on='station_id', how='left')
+    # Compute loss rate as proportion of years with loss
+    recent_loss['recent_loss_rate'] = recent_loss['recent_loss_count'] / recent_loss['recent_years_total']
+    
+    station_loss = station_loss.merge(
+        recent_loss[['station_id', 'recent_land_loss_binary', 'recent_loss_rate']], 
+        on='station_id', how='left'
+    )
+    station_loss['recent_land_loss_binary'] = station_loss['recent_land_loss_binary'].fillna(0)
+    station_loss['recent_loss_rate'] = station_loss['recent_loss_rate'].fillna(0)
+    
+    print(f"  Recent loss (2015+) stats:")
+    print(f"    Binary flag: {station_loss['recent_land_loss_binary'].sum()} stations with ≥1 event")
+    print(f"    Loss rate: mean={station_loss['recent_loss_rate'].mean():.3f}, "
+          f"max={station_loss['recent_loss_rate'].max():.3f}")
+    
     return station_loss, df
 
 # ─────────────────────────────────────────────
@@ -434,17 +459,16 @@ def remove_outliers(df, column='accretion_median'):
 # ─────────────────────────────────────────────
 def flag_storms(df):
     print("\n--- Storm Event Flagging ---")
-    try:
-        from hurricaneImplementation.storm_events import flag_storm_affected_stations
-        df = flag_storm_affected_stations(df)
-        print("Storm flags added")
-    except ImportError:
-        print("storm_events.py not found — skipping")
-        df['storm_year'] = False
-        df['storm_count'] = 0
-        df['max_category_hit'] = 0
-        df['max_surge_experienced_ft'] = 0.0
-        df['storms_hit_str'] = 'None'
+    print("⏸️  Storm processing deferred — adding placeholder fields")
+    # DEFERRED: Storm data integration added back later after data format validation
+    # For now, set defaults so models can train without storm features
+    df['storm_year'] = False
+    df['storm_count'] = 0
+    df['max_category_hit'] = 0
+    df['max_surge_experienced_ft'] = 0.0
+    df['storms_hit_str'] = 'None'
+    
+    print(f"  Storm fields set to defaults (all False/0)")
     return df
 
 # ─────────────────────────────────────────────

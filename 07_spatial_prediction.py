@@ -2,36 +2,40 @@
 07_spatial_prediction.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PURPOSE:
-    Wall-to-wall carbon stock and loss probability prediction
-    across the entire Mississippi River Deltaic Plain.
+    Wall-to-wall carbon stock and loss probability prediction across
+    the entire Mississippi River Deltaic Plain. Reads a Sentinel-2
+    spatial raster, converts it to a pixel dataframe, trains
+    spectral-only GPR and C4.5 models from the fused station dataset,
+    and applies them to every pixel.
 
-    Addresses RFP requirement #1:
-    "A method to produce wall-to-wall carbon stock estimates
-    across Louisiana's coastal wetlands - filling the gaps
-    between the 266 existing monitoring stations"
+    Spectral-only models are trained here fresh from the fused dataset —
+    the saved models from 03/05 are NOT loaded. This is intentional:
+    full-feature station models use hydro + soil + spectral; wall-to-wall
+    models are constrained to satellite-available features only.
+
+    Loss probability is clipped to [0.02, 0.97] to avoid the exact 0/1
+    artifacts that uncalibrated decision trees produce on pure leaf nodes.
 
 INPUTS:
-    data/deltaic_plain_spectral_v2_2023_07.tif  — Sentinel-2 + aux (new)
+    data/deltaic_plain_spectral_v2_2023_07.tif  — Sentinel-2 + aux bands (preferred)
     data/deltaic_plain_spectral_2023_07.tif     — Sentinel-2 only (fallback)
     data/ccap_marsh_type.csv                    — C-CAP marsh classification
-    data/fused_dataset_with_hydro.csv           — station training data
-    models/gpr_model_*.pkl                      — saved GPR models (not used
-                                                  for spatial — see below)
-    models/c45_model.pkl                        — saved C4.5 model (not used
-                                                  for spatial — see below)
-
-NOTE ON SPATIAL vs STATION MODELS:
-    Full-feature models (scripts 03/05) use hydro + soil + spectral.
-    Wall-to-wall prediction uses spectral-only features (available
-    everywhere via satellite). Separate spatial models are trained
-    here using only spectral + auxiliary satellite features.
-    This produces wider uncertainty intervals — documented honestly.
+                                                  (NDVI thresholds used if absent)
+    data/fused_dataset_final.csv                — station training data
+    data/crms_all_stations_coords.csv           — for marsh type spatial assignment
 
 OUTPUTS:
-    results/wall_to_wall_predictions.csv    — pixel predictions
-    results/wall_to_wall_carbon.tif         — carbon stock raster
-    results/wall_to_wall_loss_prob.tif      — loss probability raster
-    results/high_risk_parcels.geojson       — high-risk areas for dashboard
+    results/wall_to_wall_predictions.csv    — full pixel predictions
+    results/high_risk_parcels.geojson       — high-risk pixels (loss_prob > 0.6)
+
+    NOTE: Raster outputs (wall_to_wall_carbon.tif, wall_to_wall_loss_prob.tif)
+    are currently disabled for speed. Re-enable save_raster_predictions() call
+    in run_spatial_prediction() if GeoTIFFs are needed.
+
+    After this script, run in order:
+        python sample_wall.py     → stratified sample for display
+        python display_wall.py    → filter to dashboard-sized display set
+        python get_high_risk.py   → high-risk unmonitored parcels
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -268,12 +272,17 @@ def train_spatial_c45(
                              if f in pixel_df.columns]
     print(f"Spatial features: {available_spatial}")
 
-    TARGET = 'ever_lost_land'
+    TARGET = 'loss_severity'  # 3-class: LOW / MODERATE / HIGH
 
     fused = pd.read_csv(fused_path)
     if 'year' in fused.columns:
         fused = fused.sort_values('year', ascending=False)
     fused = fused.drop_duplicates('station_id', keep='first')
+
+    # Fall back to ever_lost_land if fix scripts haven't been run yet
+    if TARGET not in fused.columns:
+        print(f"  '{TARGET}' not found — falling back to 'ever_lost_land'")
+        TARGET = 'ever_lost_land'
 
     available = [f for f in available_spatial if f in fused.columns]
     fused_clean = fused.dropna(subset=available + [TARGET])
@@ -377,12 +386,23 @@ def predict_loss_wall_to_wall(pixel_df, clf, scaler, features):
     X = pixel_df_clean[available].values
     X_scaled = scaler.transform(X)
 
+    # Weighted risk score: 0*P(LOW) + 0.5*P(MODERATE) + 1.0*P(HIGH)
+    # Uses clf.classes_ ordering so it is robust to sklearn label sorting
+    class_weights = {'LOW': 0.0, 'MODERATE': 0.5, 'HIGH': 1.0}
+    weight_array = np.array([
+        class_weights.get(c, 0.5) for c in clf.classes_
+    ])
+
     chunk_size = 10000
     probs = []
     for i in range(0, len(X_scaled), chunk_size):
         chunk = X_scaled[i:i+chunk_size]
-        prob = clf.predict_proba(chunk)[:, 1]
-        probs.extend(prob)
+        proba = clf.predict_proba(chunk)
+        risk_score = proba @ weight_array
+        probs.extend(risk_score)
+
+    # Clip to avoid exact endpoints — pure decision-tree leaves produce this artifact
+    probs = np.clip(probs, 0.02, 0.97)
 
     pixel_df.loc[pixel_df_clean.index, 'loss_probability'] = probs
     pixel_df['risk_level'] = pd.cut(

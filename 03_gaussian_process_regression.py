@@ -3,30 +3,33 @@
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PURPOSE:
     Trains habitat-stratified Gaussian Process Regression (GPR) models
-    to estimate carbon stock at every CRMS station location. Once trained,
-    the saved models can score new data without full retraining.
+    to estimate carbon stock (g C/cm³) at CRMS station locations.
+    Three separate models are trained: freshwater/intermediate, brackish,
+    and saline. Once trained, saved models can score new data without
+    full retraining (see rescore_new_data()).
+
+    Target: carbon_stock column in fused dataset; falls back to
+    accretion_median if carbon_stock is unavailable.
 
 INPUTS:
-    data/fused_dataset.csv          — CRMS + Sentinel-2 merged features
-    data/crms_freshwater_intermediate.csv
-    data/crms_brackish.csv
-    data/crms_saline.csv
+    data/fused_dataset_final.csv    — station-month fused dataset from 02
 
 OUTPUTS:
-    results/gpr_results.csv         — Cross-validation R² and RMSE per habitat
-    results/gpr_model_{habitat}.pkl — Saved trained model (for re-scoring)
-    results/gpr_scaler_{habitat}.pkl— Saved feature scaler (for re-scoring)
-    results/shap_{habitat}.csv      — Feature importance rankings
-    figures/shap_{habitat}.png      — SHAP summary plots
-    figures/gpr_predictions_{habitat}.png — Predicted vs observed plots
+    results/gpr_results.csv                    — R² and RMSE per habitat (CV)
+    models/gpr_model_{habitat}.pkl             — trained GPR model
+    models/gpr_scaler_{habitat}.pkl            — fitted feature scaler
+    models/gpr_features_{habitat}.pkl          — selected feature list
+    results/shap_{habitat}.csv                 — mean |SHAP| per feature
+    figures/shap_{habitat}.png                 — SHAP summary plot
+    figures/gpr_predictions_{habitat}.png      — predicted vs observed plot
 
 WHEN TO RE-RUN:
-    Full retrain (this script): Annually, or after a major event like a storm
-    Re-score only (rescore_new_data): When new CRMS/Sentinel-2 data arrives
+    Full retrain (this script): annually, or after a major storm event
+    Re-score only (rescore_new_data): when new CRMS/Sentinel-2 data arrives
 
 FOLLOWS:
-    Chenevert & Edmonds (2024) — habitat-stratified modeling,
-    5-fold CV x 100 runs, backward elimination feature selection
+    Chenevert & Edmonds (2024) — habitat-stratified GPR, 5-fold spatially
+    blocked CV × 100 runs, backward elimination feature selection (p < 0.05)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -461,20 +464,23 @@ def run_full_training():
         if len(df_clean) < 50:
             print(f"  n={len(df_clean)} — too few for spatially blocked CV")
             print(f"  Training final model on full dataset")
-            print(f"  Validation: Baustian independent sites only")
+            selected_features = available
             gpr, scaler = train_and_save_model(
                 df_clean, selected_features, target_col, habitat_name
             )
             X = df_clean[selected_features].values
             compute_shap_values(gpr, scaler, X, selected_features, habitat_name)
-            all_results.append({
+            
+            results = {
                 'habitat': habitat_name,
                 'mean_r2': 'N/A - insufficient n for CV',
                 'std_r2': 'N/A',
                 'mean_rmse': 'N/A',
                 'n_stations': len(df_clean),
                 'features_used': str(selected_features)
-            })
+            }
+            
+            all_results.append(results)
             continue
 
         # Backward elimination
@@ -506,7 +512,7 @@ def run_full_training():
         df_clean[f'carbon_std'] = y_std
         plot_predictions(df_clean, 'carbon_pred', 'carbon_std', target_col, habitat_name)
 
-    # Save results summary
+        all_results.append(results)
     if all_results:
         results_df = pd.DataFrame(all_results)
         results_df.to_csv('results/gpr_results.csv', index=False)

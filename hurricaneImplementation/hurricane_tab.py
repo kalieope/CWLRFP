@@ -2,16 +2,21 @@
 hurricane_tab.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PURPOSE:
-    Hurricane Impact tab module for 06_dashboard.py.
-    Imported and called by the main dashboard.
-    Keeps dashboard modular and maintainable.
+    Hurricane Impact tab module — a self-contained Streamlit component
+    that can be added to 06_dashboard.py as a fifth tab.
+
+    NOTE: This module is NOT currently imported by 06_dashboard.py.
+    To activate it, add a tab in main() and call render_hurricane_tab().
 
     Contains two views:
     1. Historical Storm Review — what past storms did to monitored stations
     2. Future Scenario Simulation — what would happen if a similar storm hit today
 
-USAGE IN DASHBOARD:
-    from hurricane_tab import render_hurricane_tab
+    Depends on storm_events.py for the storm registry and scenario definitions.
+
+USAGE (when re-connecting to dashboard):
+    from hurricaneImplementation.hurricane_tab import render_hurricane_tab
+    tab5 = st.tabs([..., "Hurricane Impact"])
     with tab5:
         render_hurricane_tab(df, PLOTLY_TEMPLATE)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

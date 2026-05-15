@@ -1,9 +1,42 @@
 """
 06_dashboard.py
-Professional dark-theme dashboard for CWL RFP
-ArcGIS-style dark mode, station search/zoom/detail panel,
-toggleable loss probability and carbon stock layers.
-Run with: streamlit run 06_dashboard.py
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PURPOSE:
+    Interactive Streamlit dashboard for the CWL RFP. Presents
+    station-level model results and wall-to-wall spatial predictions
+    in an ArcGIS-style dark-theme UI for coastal restoration planners.
+
+INPUTS:
+    data/fused_dataset_final.csv        — station features + loss probability
+    results/wall_to_wall_display.csv    — spatial display sample (from display_wall.py)
+    results/land_loss_rules.csv         — FP-Growth land-loss rules (from 04)
+
+TABS:
+    Risk Analysis           — interactive map, station detail panel, top FP-Growth rules.
+                              Map view toggles between Station Map and Wall-to-Wall Spatial.
+                              Wall-to-Wall layer toggle switches between loss probability
+                              (red/orange/green) and carbon stock (blue gradient).
+    Investment Priorities   — stations ranked by carbon loss avoided × loss probability
+    Field Verification Queue — stations flagged for priority field visit
+                              (loss_probability > 0.5 AND NDVI < 0.4)
+    Regional Overview       — coast-wide charts and basin-level summary table
+
+    NOTE: Tabs 2-4 always show station-level data regardless of map view selection.
+    The map view toggle only affects what is rendered on the map in Tab 1.
+
+SIDEBAR CONTROLS:
+    Station search          — zoom map to any CRMS station ID
+    Map Layer               — Loss Probability or Carbon Stock coloring for station dots
+    Map View                — Station Map or Wall-to-Wall Spatial
+    Wall-to-Wall Layer      — (visible in spatial view) Loss Probability or Carbon Stock
+    Filters                 — marsh type, basin, minimum loss probability
+
+NOTE: hurricaneImplementation/hurricane_tab.py exists but is not currently
+connected to this dashboard. It can be added as a fifth tab if needed.
+
+RUN WITH:
+    streamlit run 06_dashboard.py
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
 import streamlit as st
@@ -180,6 +213,15 @@ def load_spatial_data():
     try:
         spatial_df = pd.read_csv(spatial_path, usecols=usecols)
         spatial_df = spatial_df.dropna(subset=['lat', 'lon', 'loss_probability'])
+
+        # Derived columns used in parcel detail panels and KPIs
+        spatial_df['area_ha']          = PARCEL_AREA_HA
+        spatial_df['carbon_stock_MgC'] = spatial_df['carbon_predicted'] * CARBON_G_TO_MGC
+        spatial_df['parcel_id']        = (
+            spatial_df['lat'].round(4).astype(str) + 'N_' +
+            spatial_df['lon'].abs().round(4).astype(str) + 'W'
+        )
+
         print(f"Wall-to-wall sample: {len(spatial_df):,} pixels")
         return spatial_df
     except Exception as e:
@@ -236,6 +278,16 @@ def carbon_color_hex(stock, vmin, vmax):
     g = int(80 + norm * 120)
     b = int(160 + norm * 90)
     return f'#{r:02x}{g:02x}{b:02x}'
+
+# ─────────────────────────────────────────────
+# PARCEL AREA / CARBON CONSTANTS
+# Each wall-to-wall pixel = 100 m × 100 m = 1 ha
+# Carbon mass uses 1 m soil depth (standard blue-carbon accounting)
+# carbon_predicted (g C/cm³) × 1e10 cm³/pixel ÷ 1e6 g/Mg = × 1e4
+# ─────────────────────────────────────────────
+PARCEL_AREA_HA   = 1.0       # ha per pixel
+PARCEL_AREA_M2   = 10_000    # m² per pixel
+CARBON_G_TO_MGC  = 1e4       # multiply g C/cm³ by this → Mg C per parcel (1 m depth)
 
 # ─────────────────────────────────────────────
 # MAP
@@ -322,7 +374,7 @@ def build_map(df, layer_mode, selected_id=None, zoom_station=None,
         </div>"""
     m.get_root().html.add_child(folium.Element(legend))
 
-    # Wall-to-wall dot layer
+    # Wall-to-wall parcel layer
     if spatial_df is not None and len(spatial_df) > 0:
         coastal = spatial_df[
             (spatial_df['lat'] >= 28.9) & (spatial_df['lat'] <= 30.2) &
@@ -334,21 +386,73 @@ def build_map(df, layer_mode, selected_id=None, zoom_station=None,
             c_max = coastal['carbon_predicted'].max()
             for _, row in coastal.iterrows():
                 color = carbon_color_hex(row['carbon_predicted'], c_min, c_max)
+                mgc   = row.get('carbon_stock_MgC', row['carbon_predicted'] * CARBON_G_TO_MGC)
+                unc   = row.get('carbon_uncertainty', 0)
+                unc_mgc = unc * CARBON_G_TO_MGC
+                risk_lbl = row.get('risk_level', '—')
+                risk_prob = row.get('loss_probability', 0)
+                rcolor = '#ef5350' if risk_lbl == 'HIGH' else ('#ffa726' if risk_lbl == 'MODERATE' else '#66bb6a')
+                popup_html = f"""
+                <div style="font-family:monospace;font-size:12px;color:#e0e0e0;
+                            background:#16213e;padding:12px;border-radius:4px;
+                            border-left:3px solid {color};min-width:230px;">
+                    <b style="color:#4fc3f7;font-size:13px;">PARCEL {row['lat']:.4f}N, {abs(row['lon']):.4f}W</b>
+                    <hr style="border-color:#0f3460;margin:6px 0;">
+                    <span style="color:#a0a0b0;">EST. CARBON STOCK</span><br>
+                    <b style="color:#e0e0e0;font-size:14px;">{mgc:.1f} Mg C</b>
+                    <span style="color:#a0a0b0;font-size:11px;"> ± {unc_mgc:.1f} Mg C</span><br>
+                    <span style="color:#a0a0b0;font-size:10px;">{row['carbon_predicted']:.4f} g C/cm³ · 1 m depth</span>
+                    <hr style="border-color:#0f3460;margin:6px 0;">
+                    <span style="color:#a0a0b0;">PARCEL AREA</span><br>
+                    <b style="color:#e0e0e0;">{PARCEL_AREA_HA:.1f} ha</b>
+                    <span style="color:#a0a0b0;font-size:10px;"> (100 × 100 m)</span>
+                    <hr style="border-color:#0f3460;margin:6px 0;">
+                    <span style="color:#a0a0b0;">LOSS RISK</span><br>
+                    <b style="color:{rcolor};font-size:14px;">{risk_lbl}</b>
+                    <span style="color:#a0a0b0;"> ({risk_prob:.0%})</span><br>
+                    <span style="color:#a0a0b0;">Marsh:</span> {row.get('marsh_type','—')}
+                </div>"""
                 folium.CircleMarker(
                     location=[row['lat'], row['lon']],
-                    radius=2, color=color, fill=True,
-                    fill_color=color, fill_opacity=0.5, weight=0
+                    radius=10, color=color, fill=True,
+                    fill_color=color, fill_opacity=0.75, weight=1,
+                    popup=folium.Popup(popup_html, max_width=280)
                 ).add_to(m)
         else:
-            for risk, color in [('HIGH', '#ef5350'),
-                                 ('MODERATE', '#ffa726'),
-                                 ('LOW', '#66bb6a')]:
-                for _, row in coastal[coastal['risk_level'] == risk].iterrows():
-                    folium.CircleMarker(
-                        location=[row['lat'], row['lon']],
-                        radius=2, color=color, fill=True,
-                        fill_color=color, fill_opacity=0.5, weight=0
-                    ).add_to(m)
+            risk_colors = {'HIGH': '#ef5350', 'MODERATE': '#ffa726', 'LOW': '#66bb6a'}
+            for _, row in coastal.iterrows():
+                risk_lbl  = row.get('risk_level', 'LOW')
+                risk_prob = row.get('loss_probability', 0)
+                color     = risk_colors.get(risk_lbl, '#66bb6a')
+                mgc       = row.get('carbon_stock_MgC', row['carbon_predicted'] * CARBON_G_TO_MGC)
+                unc       = row.get('carbon_uncertainty', 0)
+                unc_mgc   = unc * CARBON_G_TO_MGC
+                popup_html = f"""
+                <div style="font-family:monospace;font-size:12px;color:#e0e0e0;
+                            background:#16213e;padding:12px;border-radius:4px;
+                            border-left:3px solid {color};min-width:230px;">
+                    <b style="color:#4fc3f7;font-size:13px;">PARCEL {row['lat']:.4f}N, {abs(row['lon']):.4f}W</b>
+                    <hr style="border-color:#0f3460;margin:6px 0;">
+                    <span style="color:#a0a0b0;">LOSS RISK</span><br>
+                    <b style="color:{color};font-size:14px;">{risk_lbl}</b>
+                    <span style="color:#a0a0b0;"> ({risk_prob:.0%})</span>
+                    <hr style="border-color:#0f3460;margin:6px 0;">
+                    <span style="color:#a0a0b0;">EST. CARBON STOCK</span><br>
+                    <b style="color:#e0e0e0;font-size:14px;">{mgc:.1f} Mg C</b>
+                    <span style="color:#a0a0b0;font-size:11px;"> ± {unc_mgc:.1f} Mg C</span><br>
+                    <span style="color:#a0a0b0;font-size:10px;">{row['carbon_predicted']:.4f} g C/cm³ · 1 m depth</span>
+                    <hr style="border-color:#0f3460;margin:6px 0;">
+                    <span style="color:#a0a0b0;">PARCEL AREA</span><br>
+                    <b style="color:#e0e0e0;">{PARCEL_AREA_HA:.1f} ha</b>
+                    <span style="color:#a0a0b0;font-size:10px;"> (100 × 100 m)</span><br>
+                    <span style="color:#a0a0b0;">Marsh:</span> {row.get('marsh_type','—')}
+                </div>"""
+                folium.CircleMarker(
+                    location=[row['lat'], row['lon']],
+                    radius=10, color=color, fill=True,
+                    fill_color=color, fill_opacity=0.75, weight=1,
+                    popup=folium.Popup(popup_html, max_width=280)
+                ).add_to(m)
         folium.LayerControl().add_to(m)
 
     return m
@@ -396,24 +500,42 @@ def render_spatial_summary(df):
         )
         return
 
-    high_risk = int((df['loss_probability'] > 0.6).sum())
-    mean_carbon = df['carbon_predicted'].mean()
+    high_mask   = df['loss_probability'] > 0.6
+    mod_mask    = (df['loss_probability'] >= 0.3) & ~high_mask
+    n_parcels   = len(df)
+    n_high      = int(high_mask.sum())
+    total_area  = n_parcels * PARCEL_AREA_HA
+    high_area   = n_high * PARCEL_AREA_HA
+
+    mgc_col = 'carbon_stock_MgC' if 'carbon_stock_MgC' in df.columns else None
+    if mgc_col:
+        total_carbon    = df[mgc_col].sum()
+        carbon_at_risk  = df.loc[high_mask, mgc_col].sum()
+        mean_carbon_mgc = df[mgc_col].mean()
+    else:
+        total_carbon = carbon_at_risk = mean_carbon_mgc = float('nan')
+
     mean_loss = df['loss_probability'].mean()
-    high_unc = int(df['high_uncertainty'].sum())
 
     st.markdown(f"""
     <div class="station-panel">
-        <h4>Wall-to-Wall Spatial Summary</h4>
-        <div class="label">Sampled Pixels</div>
-        <div class="value">{len(df):,}</div>
-        <div class="label">High-Risk Pixels</div>
-        <div class="value">{high_risk:,}</div>
-        <div class="label">Mean Predicted Carbon</div>
-        <div class="value">{mean_carbon:.4f} g C/cm³</div>
+        <h4>Parcel Spatial Summary</h4>
+        <div class="label">Total Parcels (display sample)</div>
+        <div class="value">{n_parcels:,}</div>
+        <div class="label">Total Parcel Area</div>
+        <div class="value">{total_area:,.0f} ha</div>
+        <div class="label">Mean Carbon Stock</div>
+        <div class="value">{mean_carbon_mgc:.1f} Mg C / parcel</div>
+        <div class="label">Total Est. Carbon</div>
+        <div class="value">{total_carbon:,.0f} Mg C</div>
+        <div class="label">Carbon at Risk (High-Risk Parcels)</div>
+        <div class="value risk-high">{carbon_at_risk:,.0f} Mg C</div>
+        <div class="label">High-Risk Parcels</div>
+        <div class="value risk-high">{n_high:,} &nbsp;({n_high/n_parcels:.0%})</div>
+        <div class="label">High-Risk Area</div>
+        <div class="value risk-high">{high_area:,.0f} ha</div>
         <div class="label">Mean Loss Probability</div>
         <div class="value">{mean_loss:.1%}</div>
-        <div class="label">High Uncertainty Pixels</div>
-        <div class="value">{high_unc:,}</div>
     </div>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
@@ -453,7 +575,7 @@ def main():
         if spatial_df is not None:
             st.markdown('<div class="section-label" style="margin-top:16px;">Map View</div>', unsafe_allow_html=True)
             map_view = st.radio(
-                '', ['Station Map', 'Wall-to-Wall Spatial'],
+                '', ['Wall-to-Wall Spatial', 'Station Map'],
                 label_visibility='collapsed'
             )
             if map_view == 'Wall-to-Wall Spatial':
@@ -485,7 +607,7 @@ def main():
         station_filtered = station_filtered[station_filtered['Basin'].isin(basin_filter)]
     station_filtered = station_filtered[station_filtered['loss_probability'] >= risk_min]
 
-    # Map-layer filtered — only station dots when in Station Map view
+    # Map-layer filtered — hide station dots in parcel/spatial view
     if map_view == 'Station Map':
         filtered = station_filtered
     else:
@@ -520,23 +642,34 @@ def main():
             else:
                 st.sidebar.error(f"'{station_search}' not found")
 
-    # KPIs — station metrics always shown from station_filtered; spatial metrics added for w2w view
+    # KPIs — parcel-centric when in spatial view, station-centric otherwise
     k1, k2, k3, k4, k5 = st.columns(5)
-    with k1: st.metric("Stations", f"{len(station_filtered)}")
-    with k2: st.metric("High Risk", f"{(station_filtered['loss_probability'] > 0.6).sum()}")
-    if carbon_col in station_filtered.columns:
-        with k3: st.metric("Mean Carbon Stock", f"{station_filtered[carbon_col].mean():.4f} g C/cm³")
-        with k4:
-            at_risk = station_filtered.loc[station_filtered['loss_probability'] > 0.6, carbon_col].sum()
-            st.metric("Carbon at Risk", f"{at_risk:.3f} g C/cm³")
-    else:
-        with k3: st.metric("Mean Carbon Stock", "N/A")
-        with k4: st.metric("Carbon at Risk", "N/A")
     if map_view == 'Wall-to-Wall Spatial' and spatial_df is not None:
-        with k5:
-            sp = spatial_df.dropna(subset=['loss_probability'])
-            st.metric("W2W Pixels", f"{len(sp):,}")
+        sp = spatial_df.dropna(subset=['loss_probability'])
+        n_high_p   = int((sp['loss_probability'] > 0.6).sum())
+        total_area = len(sp) * PARCEL_AREA_HA
+        high_area  = n_high_p * PARCEL_AREA_HA
+        mgc_col    = 'carbon_stock_MgC' if 'carbon_stock_MgC' in sp.columns else None
+        total_mgc  = sp[mgc_col].sum()      if mgc_col else float('nan')
+        atrisk_mgc = sp.loc[sp['loss_probability'] > 0.6, mgc_col].sum() if mgc_col else float('nan')
+        with k1: st.metric("Total Parcel Area",    f"{total_area:,.0f} ha")
+        with k2: st.metric("High-Risk Area",        f"{high_area:,.0f} ha",
+                            f"{n_high_p:,} parcels ({n_high_p/len(sp):.0%})")
+        with k3: st.metric("Total Est. Carbon",     f"{total_mgc:,.0f} Mg C")
+        with k4: st.metric("Carbon at Risk",        f"{atrisk_mgc:,.0f} Mg C",
+                            "high-risk parcels only")
+        with k5: st.metric("Mean Loss Probability", f"{sp['loss_probability'].mean():.1%}")
     else:
+        with k1: st.metric("Stations", f"{len(station_filtered)}")
+        with k2: st.metric("High Risk", f"{(station_filtered['loss_probability'] > 0.6).sum()}")
+        if carbon_col in station_filtered.columns:
+            with k3: st.metric("Mean Carbon Stock", f"{station_filtered[carbon_col].mean():.4f} g C/cm³")
+            with k4:
+                at_risk = station_filtered.loc[station_filtered['loss_probability'] > 0.6, carbon_col].sum()
+                st.metric("Carbon at Risk", f"{at_risk:.3f} g C/cm³")
+        else:
+            with k3: st.metric("Mean Carbon Stock", "N/A")
+            with k4: st.metric("Carbon at Risk", "N/A")
         with k5:
             lost = int(station_filtered['ever_lost_land'].sum()) if 'ever_lost_land' in station_filtered.columns else 0
             st.metric("Confirmed Loss Events", f"{lost}")
@@ -556,15 +689,20 @@ def main():
         map_col, detail_col = st.columns([3, 1])
 
         with map_col:
-            map_title = 'Station Risk Map — Louisiana Coastal Wetlands'
             if map_view == 'Wall-to-Wall Spatial':
-                map_title = 'Wall-to-Wall Spatial Map — Louisiana Coastal Wetlands'
+                map_title = 'Unmonitored Parcel Risk Map — Louisiana Coastal Wetlands'
+            else:
+                map_title = 'CRMS Station Risk Map — Louisiana Coastal Wetlands'
             st.markdown(f'<div class="section-label">{map_title}</div>', unsafe_allow_html=True)
 
             if map_view == 'Station Map':
-                st.caption(f"{len(filtered)} stations displayed with wall-to-wall risk heatmap overlay")
+                st.caption(f"{len(filtered)} monitoring stations | Click a dot for station details")
             else:
-                st.caption(f"{len(filtered):,} sampled spatial pixels displayed | Wall-to-wall estimates shown")
+                n_sp = len(spatial_df) if spatial_df is not None else 0
+                st.caption(
+                    f"{n_sp:,} unmonitored parcels displayed | "
+                    "Click any parcel to see estimated carbon stock, area, and loss risk"
+                )
 
             m = build_map(
                 filtered, layer_mode,
@@ -583,28 +721,50 @@ def main():
                 else:
                     st.markdown(
                         '<div style="color:#a0a0b0;font-size:12px;padding:20px;'
-                        'border:1px dashed #0f3460;border-radius:4px;text-align:center;'>
+                        'border:1px dashed #0f3460;border-radius:4px;text-align:center;">'
                         'Search a station ID<br>in the sidebar<br>to view details'
                         '</div>', unsafe_allow_html=True
                     )
             else:
-                st.markdown('<div class="section-label">Wall-to-Wall Spatial Summary</div>', unsafe_allow_html=True)
-                render_spatial_summary(filtered)
-                
-                # Unmonitored data callout in spatial view
-                if unmonitored_df is not None and len(unmonitored_df) > 0:
-                    st.markdown('<div class="section-label" style="margin-top:12px;">Unmonitored High-Risk Areas</div>',
-                                unsafe_allow_html=True)
-                    st.markdown(f"""
-                    <div style="background:#1a2a2e;border:1px solid #ef5350;border-radius:4px;padding:10px;font-family:monospace;font-size:11px;">
-                        <div style="color:#ef5350;font-weight:600;margin-bottom:6px;">⚠️ Unknown Pixels Detected</div>
-                        <div style="color:#e0e0e0;">
-                            <div style="margin-bottom:4px;"><span style="color:#a0a0b0;">Count:</span> {len(unmonitored_df):,} pixels</div>
-                            <div style="margin-bottom:4px;"><span style="color:#a0a0b0;">Loss Prob:</span> 100% (all pixels)</div>
-                            <div style="margin-bottom:4px;"><span style="color:#a0a0b0;">Mean Carbon:</span> {unmonitored_df['carbon_predicted'].mean():.4f} g C/cm³</div>
-                            <div style="margin-bottom:4px;"><span style="color:#a0a0b0;">Avg Dist:</span> {unmonitored_df['dist_to_nearest_station_km'].mean():.1f} km to nearest station</div>
-                        </div>
-                    </div>""", unsafe_allow_html=True)
+                st.markdown('<div class="section-label">Parcel Summary</div>', unsafe_allow_html=True)
+                render_spatial_summary(spatial_df)
+
+                # Top high-risk parcels table
+                if spatial_df is not None and len(spatial_df) > 0:
+                    st.markdown(
+                        '<div class="section-label" style="margin-top:14px;">Top High-Risk Parcels</div>',
+                        unsafe_allow_html=True
+                    )
+                    mgc_c = 'carbon_stock_MgC' if 'carbon_stock_MgC' in spatial_df.columns else None
+                    top = spatial_df[spatial_df['loss_probability'] > 0.6].copy()
+                    if mgc_c:
+                        top = top.sort_values(mgc_c, ascending=False)
+                        show_cols = ['lat', 'lon', mgc_c, 'loss_probability', 'marsh_type']
+                        rename = {'lat': 'Lat', 'lon': 'Lon',
+                                  mgc_c: 'Carbon (Mg C)',
+                                  'loss_probability': 'Loss Risk',
+                                  'marsh_type': 'Marsh'}
+                    else:
+                        top = top.sort_values('loss_probability', ascending=False)
+                        show_cols = ['lat', 'lon', 'carbon_predicted', 'loss_probability', 'marsh_type']
+                        rename = {'lat': 'Lat', 'lon': 'Lon',
+                                  'carbon_predicted': 'C (g/cm³)',
+                                  'loss_probability': 'Loss Risk',
+                                  'marsh_type': 'Marsh'}
+                    top_disp = top[show_cols].head(15).rename(columns=rename)
+                    fmt = {'Lat': '{:.4f}', 'Lon': '{:.4f}', 'Loss Risk': '{:.0%}'}
+                    if 'Carbon (Mg C)' in top_disp.columns:
+                        fmt['Carbon (Mg C)'] = '{:.1f}'
+                    else:
+                        fmt['C (g/cm³)'] = '{:.4f}'
+                    st.dataframe(
+                        top_disp.style.format(fmt),
+                        use_container_width=True, height=260
+                    )
+                    st.caption(
+                        f"{len(top):,} high-risk parcels total · "
+                        f"{len(top)*PARCEL_AREA_HA:,.0f} ha at risk"
+                    )
 
             st.markdown('<div class="section-label" style="margin-top:16px;">Top Risk Patterns</div>',
                         unsafe_allow_html=True)
@@ -624,7 +784,76 @@ def main():
 
     # ── TAB 2: INVESTMENT PRIORITIES ──
     with tab2:
-        st.markdown('<div class="section-label">Restoration Investment Priority Ranking</div>',
+        # ── PARCEL-LEVEL PRIORITIES (primary) ──
+        if spatial_df is not None and len(spatial_df) > 0:
+            st.markdown(
+                '<div class="section-label">Unmonitored Parcel Investment Priorities</div>',
+                unsafe_allow_html=True
+            )
+            st.caption(
+                "Ranked by estimated carbon at risk (carbon stock × loss probability) — "
+                "each row is a 1 ha unmonitored parcel. Click a row to identify the parcel on the map."
+            )
+            mgc_c = 'carbon_stock_MgC' if 'carbon_stock_MgC' in spatial_df.columns else None
+            parcel_ranked = spatial_df.copy()
+            if mgc_c:
+                parcel_ranked['carbon_at_risk_MgC'] = (
+                    parcel_ranked[mgc_c] * parcel_ranked['loss_probability']
+                )
+                parcel_ranked = parcel_ranked.sort_values('carbon_at_risk_MgC', ascending=False)
+                pcols = ['lat', 'lon', 'marsh_type', mgc_c,
+                         'carbon_at_risk_MgC', 'loss_probability', 'risk_level', 'area_ha']
+                prename = {
+                    'lat': 'Latitude', 'lon': 'Longitude',
+                    'marsh_type': 'Marsh Type',
+                    mgc_c: 'Carbon Stock (Mg C)',
+                    'carbon_at_risk_MgC': 'Carbon at Risk (Mg C)',
+                    'loss_probability': 'Loss Prob.',
+                    'risk_level': 'Risk Level',
+                    'area_ha': 'Area (ha)'
+                }
+                pfmt = {
+                    'Latitude': '{:.4f}', 'Longitude': '{:.4f}',
+                    'Carbon Stock (Mg C)': '{:.1f}',
+                    'Carbon at Risk (Mg C)': '{:.1f}',
+                    'Loss Prob.': '{:.0%}',
+                    'Area (ha)': '{:.1f}'
+                }
+            else:
+                parcel_ranked['carbon_at_risk'] = (
+                    parcel_ranked['carbon_predicted'] * parcel_ranked['loss_probability']
+                )
+                parcel_ranked = parcel_ranked.sort_values('carbon_at_risk', ascending=False)
+                pcols = ['lat', 'lon', 'marsh_type', 'carbon_predicted',
+                         'carbon_at_risk', 'loss_probability', 'risk_level']
+                prename = {
+                    'lat': 'Latitude', 'lon': 'Longitude',
+                    'marsh_type': 'Marsh Type',
+                    'carbon_predicted': 'Carbon (g C/cm³)',
+                    'carbon_at_risk': 'Carbon at Risk',
+                    'loss_probability': 'Loss Prob.',
+                    'risk_level': 'Risk Level'
+                }
+                pfmt = {
+                    'Latitude': '{:.4f}', 'Longitude': '{:.4f}',
+                    'Carbon (g C/cm³)': '{:.4f}',
+                    'Carbon at Risk': '{:.4f}',
+                    'Loss Prob.': '{:.0%}'
+                }
+
+            avail_p = {k: v for k, v in prename.items() if k in parcel_ranked.columns}
+            st.dataframe(
+                parcel_ranked[list(avail_p.keys())].rename(columns=avail_p).head(100)
+                .style.format(pfmt)
+                .background_gradient(
+                    subset=['Carbon at Risk (Mg C)' if mgc_c else 'Carbon at Risk'],
+                    cmap='RdYlGn'
+                ),
+                use_container_width=True, height=400
+            )
+            st.markdown('<hr>', unsafe_allow_html=True)
+
+        st.markdown('<div class="section-label">Monitored Station Investment Priority Ranking</div>',
                     unsafe_allow_html=True)
         st.caption("Ranked by carbon loss avoided per unit area — highest priority first")
 
@@ -741,7 +970,7 @@ def main():
                 f'<div style="background:#1a2a2e;border:1px solid #ef5350;'
                 f'border-radius:4px;padding:10px;margin-bottom:12px;'
                 f'font-family:monospace;font-size:12px;color:#ef5350;">'
-                f'⚠️ {len(unmonitored_df):,} unmonitored pixels with 100% predicted loss probability'
+                f'⚠️ {len(unmonitored_df):,} unmonitored pixels with high loss probability'
                 f'</div>', unsafe_allow_html=True
             )
 

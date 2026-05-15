@@ -31,6 +31,11 @@ DESIGN:
     Validation set → BA/TE Baustian sites + Delta-X sites (never in training)
     This provides independent spatial validation of GPR carbon predictions
     not possible with CRMS-only data.
+
+    THIS ISN'T BEING USED IN SCRIPT CURRENTLY — just a data integration step 
+    to create enriched labels and validation sets for future modeling efforts. 
+    The ORNL spatial data is saved for potential use in validating wall-to-wall 
+    GPR predictions, but isn't currently integrated into the training/validation datasets.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 

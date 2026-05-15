@@ -1,9 +1,27 @@
 """
 04_fpgrowth_pattern_mining.py
-FP-Growth frequent pattern mining on discretized CRMS-Sentinel2 features.
-Mines co-occurrence rules linking habitat, hydrology, and spectral conditions
-to wetland loss outcomes.
-Apriori run first as baseline for comparison.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PURPOSE:
+    Discretizes continuous CRMS features into ecologically meaningful
+    bins and runs FP-Growth frequent pattern mining to discover
+    co-occurrence rules linking habitat, hydrology, spectral conditions,
+    and elevation to wetland loss outcomes.
+
+    Apriori is also run as a baseline for class comparison. Rules with
+    'recent_loss_YES' in the consequent are extracted as land-loss rules
+    for the dashboard.
+
+INPUTS:
+    data/fused_dataset_final.csv    — station-month fused dataset from 02
+
+OUTPUTS:
+    results/fpgrowth_itemsets.csv   — frequent itemsets (FP-Growth)
+    results/apriori_itemsets.csv    — frequent itemsets (Apriori baseline)
+    results/association_rules.csv   — all association rules mined
+    results/land_loss_rules.csv     — rules whose consequent is loss_significant
+                                      (MODERATE or HIGH severity — any detectable loss)
+    figures/                        — rule scatter plots (support vs confidence)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
 import pandas as pd
@@ -49,10 +67,6 @@ BINS = {
     'bins': [0, 30, 70, 100],
     'labels': ['flooded_low', 'flooded_moderate', 'flooded_high']
     },
-    'recent_land_loss': {
-    'bins': [-0.5, 0.5, 1.5],
-    'labels': ['recent_loss_NO', 'recent_loss_YES']
-    },
 }
 
 # ─────────────────────────────────────────────
@@ -76,14 +90,15 @@ def discretize_features(df):
     if 'marsh_type' in df_disc.columns:
         df_disc['marsh_bin'] = 'marsh_' + df_disc['marsh_type'].str.lower()
 
-    # Land loss label (binary outcome from Landsat)
-    # Recent land loss label (2015+) — more meaningful than cumulative historical
-    loss_col = 'recent_land_loss' if 'recent_land_loss' in df_disc.columns \
-               else 'ever_lost_land'
-    if loss_col in df_disc.columns:
-        df_disc['loss_bin'] = df_disc[loss_col].map(
-            {1: 'land_loss_YES', 0: 'land_loss_NO'}
-        )
+    # Loss severity: collapse to binary for pattern mining — MODERATE and HIGH
+    # both represent detectable, ecologically meaningful loss. HIGH alone is too
+    # rare to generate rules at any reasonable support threshold.
+    if 'loss_severity' in df_disc.columns:
+        df_disc['loss_bin'] = df_disc['loss_severity'].map({
+            'LOW': 'loss_stable',
+            'MODERATE': 'loss_significant',
+            'HIGH': 'loss_significant'
+        })
     return df_disc
 
 # ─────────────────────────────────────────────
@@ -179,11 +194,11 @@ def extract_loss_rules(rules):
         return pd.DataFrame()
 
     loss_rules = rules[
-        rules['consequents'].apply(lambda x: 'recent_loss_YES' in str(x))
+        rules['consequents'].apply(lambda x: 'loss_significant' in str(x))
     ].copy()
 
     if len(loss_rules) == 0:
-        print("No land loss rules found — check if recent_loss_YES bin exists in transactions")
+        print("No land loss rules found — check if loss_significant bin exists in transactions")
         print("All rules found:")
         print(rules[['antecedents', 'consequents', 'support', 'confidence', 'lift']].head(10))
         return pd.DataFrame()
@@ -314,8 +329,12 @@ if __name__ == '__main__':
         loss_rules = extract_loss_rules(rules)
         loss_rules.to_csv('results/land_loss_rules.csv', index=False)
 
-        # Temporal mining
-        temporal_sequential_mining(df, target_col='ever_lost_land', time_col='year')
+        # Temporal mining — use MODERATE|HIGH as binary proxy (mirrors FP-Growth collapse)
+        if 'loss_severity' in df.columns:
+            df['_loss_flag'] = df['loss_severity'].isin(['MODERATE', 'HIGH']).astype(int)
+            temporal_sequential_mining(df, target_col='_loss_flag', time_col='year')
+        else:
+            temporal_sequential_mining(df, target_col='ever_lost_land', time_col='year')
 
         # Plot
         plot_rules(rules, habitat_name='full_deltaic_plain')

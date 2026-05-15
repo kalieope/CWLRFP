@@ -4,21 +4,18 @@ storm_events.py
 PURPOSE:
     Central registry of major Gulf Coast storm events affecting
     Louisiana's coastal wetlands. Used by:
-    - 02_crms_preprocessing.py  (flag affected stations)
-    - 04_fpgrowth_pattern_mining.py (separate storm/chronic rules)
-    - 03_gaussian_process_regression.py (storm feature)
-    - 05_c45_classification_temporal_roc.py (storm feature)
-    - 06_dashboard.py (hurricane impact view)
+    - 02_crms_preprocessing.py          (flag_storm_affected_stations)
+    - hurricaneImplementation/hurricane_tab.py  (historical review + scenarios)
 
-    Each storm has:
+    Each storm entry contains:
     - Name, year, category, max surge (ft)
     - Approximate landfall location (lat/lon)
     - Impact radius (km) — stations within this radius are flagged
     - Primary basins affected
     - Notes on wetland impact
 
-    Storm data sourced from NOAA National Hurricane Center
-    Impact radii are conservative estimates based on NHC damage reports
+    Storm data sourced from NOAA National Hurricane Center.
+    Impact radii are conservative estimates based on NHC damage reports.
 
 ADDING NEW STORMS:
     Add a new dict entry to GULF_STORMS following the same format.
