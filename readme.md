@@ -288,29 +288,8 @@ Map zooms to station and detail panel opens automatically.
 
 ---
 
-## Proposal Sections Status
-
-| Section | Description | Status |
-|---------|-------------|--------|
-| A1 | Cover Page | Not started |
-| A2 | Problem Statement + FROM→TO | Drafted |
-| A3 | Proposed Approach & Innovation | Drafted (revised twice) |
-| A4 | Data Access & Feature Engineering | Outlined |
-| A5 | Hypothesis Framework & Validation | Outlined |
-| A6 | Risk Assessment | Not started |
-| A7 | Scope & Timeline | Not started |
-| A8 | Deliverables & Outcomes | Not started |
-| A9 | References | Not started |
-| A10 | Related Work Survey (grad) | Not started |
-| A11 | Formal Experimental Design (grad) | Not started |
-| A12 | Reproducibility Plan (grad) | Not started |
-
----
-
 ## Known Limitations / Future Work
 
 - Monthly hydro averages unavailable via CRMS portal (server limitation) — using yearly averages as proxy
 - NASA ORNL DAAC carbon cycle products not yet integrated
 - Wall-to-wall marsh type classification uses NDVI thresholds as proxy — Landsat vegetation classification planned for Phase 2
-- Storm impact modeling uses distance/surge heuristic — ADCIRC hydrodynamic integration planned for Phase 2
-- Chenier Plain extension planned for Phase 2 (current scope: Deltaic Plain only)
